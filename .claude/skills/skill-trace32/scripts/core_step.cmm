@@ -1,0 +1,23 @@
+; Schema:
+;
+; {
+;   "type": "object",
+;   "properties": {
+;     "count": { "type": "string" },
+;   },
+;   "required": []
+; }
+;
+; Examples:
+;
+; { }
+; { "count": "10." }
+
+PRIVATE &line &count
+ENTRY %LINE &line
+
+&count=STRing.SCANAndExtract("&line","count=","1.")
+
+SILENT.Step.Asm &count
+
+ENDDO

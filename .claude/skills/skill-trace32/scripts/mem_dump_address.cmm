@@ -1,0 +1,35 @@
+; Schema:
+;
+; {
+;   "type": "object",
+;   "properties": {
+;     "address": { "type": "string" }
+;   },
+;   "required": ["address"]
+; }
+;
+; Example:
+; { "address": "0x1000" }
+
+PRIVATE &line &address
+ENTRY %LINE &line
+
+&address=STRing.SCANAndExtract("&line","address=","")
+
+PRINT %WARNING "Info: Only absolute addresses supported at the moment, display width: 32-bit"
+
+IF !sYmbol.EXIST(&address)
+(
+    PRINT %WARNING "Info: Only absolute addresses supported at the moment"
+    &address="A:&address"
+)
+
+IF "&address"==""
+(
+    PRINT %ERROR "address not provided"
+    ENDDO
+)
+
+WinPrint.Data.dump &address
+
+ENDDO

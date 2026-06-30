@@ -1,0 +1,29 @@
+; Schema:
+;
+; {
+;   "type": "object",
+;   "properties": {
+;     "pattern": { "type": "string" }
+;   },
+;   "required": ["pattern"]
+; }
+;
+; Example:
+; { "pattern": "*main"}
+
+
+PRIVATE &line &pattern
+ENTRY %LINE &line
+
+&pattern=STRing.SCANAndExtract("&line","pattern=","")
+
+IF "&pattern"==""
+(
+    PRINT %ERROR "pattern not provided"
+    ENDDO
+)
+
+PRinTer.Area
+WinPrint.GREP "&pattern"
+
+ENDDO

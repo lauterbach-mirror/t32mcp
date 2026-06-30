@@ -1,0 +1,38 @@
+; Schema:
+;
+; {
+;   "type": "object",
+;   "properties": {
+;     "register": { "type": "string" },
+;     "value": {"type": "string"}
+;   },
+;   "required": ["register", "value"]
+; }
+;
+; Example:
+; {
+;     "register": "x1",
+;     "value": "0x10"
+; }
+
+PRIVATE &line &register &value
+ENTRY %LINE &line
+
+&register=STRing.SCANAndExtract("&line","register=","")
+&value=STRing.SCANAndExtract("&line","value=","")
+
+IF "&register"==""
+(
+    PRINT %ERROR "register not provided"
+    ENDDO
+)
+
+IF "&value"==""
+(
+    PRINT %ERROR "value not provided"
+    ENDDO
+)
+
+Register.Set &register &value
+
+ENDDO

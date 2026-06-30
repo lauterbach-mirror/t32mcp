@@ -1,0 +1,58 @@
+; Schema:
+;
+; {
+;   "type": "object",
+;   "properties": {
+;     "address": { "type": "string" },
+;     "type": {"type": "string", "enum": ["R", "W", "X"] }
+;   },
+;   "required": ["address", "type"]
+; }
+;
+; Example:
+; { "address": "0x100", "type": "R" }
+; { "address": "static_var", "type": "W" }
+; { "address": "main", "type": "X" }
+
+PRIVATE &line &address &type
+ENTRY %LINE &line
+
+&address=STRing.SCANAndExtract("&line","address=","")
+&type=STRing.SCANAndExtract("&line","type=","")
+
+IF !sYmbol.EXIST(&address)
+(
+    PRINT %WARNING "Info: Only absolute addresses supported at the moment"
+    &address="A:&address"
+)
+
+ERROR.RESet
+ON ERROR CONTinue
+
+IF "&type"=="R"
+(
+    Break.Set &address /Read
+)
+ELSE IF "&type"=="W"
+(
+    Break.Set &address /Write
+)
+ELSE IF "&type"=="X"
+(
+    Break.Set &address /Program
+)
+ELSE
+(
+    PRINT %ERROR "Unknown breakpoint type: '&type' (R, W, X supported)"
+    ON ERROR inherit
+    ENDDO
+)
+
+IF ERROR.OCCURRED()
+(
+    PRINT %ERROR "Error: " ERROR.MESSAGE()
+)
+
+ON ERROR inherit
+
+ENDDO

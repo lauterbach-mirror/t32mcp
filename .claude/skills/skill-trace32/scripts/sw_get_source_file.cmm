@@ -1,0 +1,31 @@
+; Schema:
+;
+; {
+;   "type": "object",
+;   "properties": {
+;     "address": { "filename": "string" }
+;   },
+;   "required": ["filename"]
+; }
+;
+; Example:
+; { "filename": "main.c" }
+; { "filename": "lib.h" }
+
+PRIVATE &line &filename
+ENTRY %LINE &line
+ 
+&filename=STRing.SCANAndExtract("&line","filename=","")
+
+IF "&filename"==""
+(
+    PRINT %ERROR "filename not provided"
+    ENDDO
+)
+
+ON ERROR CONTinue
+
+PRinTer.Area
+WinPrint.TYPE &filename /LineNumbers
+
+ENDDO

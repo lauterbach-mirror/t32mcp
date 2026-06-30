@@ -1,0 +1,13 @@
+LOCAL &i &area
+&i=0
+PRINTER.AREA
+
+WHILE &i<10000.
+(
+  PRINT "Hello world"
+  WINPRINT.PER
+  &i=&i+1
+)
+
+&area=AREA.SELECTed()
+AREA.OPEN &area

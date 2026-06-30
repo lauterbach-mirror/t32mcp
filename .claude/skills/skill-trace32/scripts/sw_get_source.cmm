@@ -1,0 +1,34 @@
+; Schema:
+;
+; {
+;   "type": "object",
+;   "properties": {
+;     "address": { "type": "string" }
+;   },
+;   "required": []
+; }
+;
+; Example:
+; { }
+; { "address": "0x1000" }
+; { "address": "main" }
+
+
+PRIVATE &line &address
+ENTRY %LINE &line
+
+&address=STRing.SCANAndExtract("&line","address=","")
+
+IF "&address"!=""
+(
+    IF !sYmbol.EXIST(&address)
+    (
+        PRINT %WARNING "Info: Only absolute addresses supported at the moment"
+        &address="A:&address"
+    )
+)
+
+PRinTer.Area
+WinPrint.List.Hll &address /MarkPC
+
+ENDDO

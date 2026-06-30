@@ -1,0 +1,8 @@
+LOCAL &ppd
+&ppd=OS.PresentPracticeDirectory()
+
+BREAK
+
+DO &ppd/get_state.cmm
+
+ENDDO

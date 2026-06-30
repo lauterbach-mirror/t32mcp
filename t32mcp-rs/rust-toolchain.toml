@@ -1,0 +1,6 @@
+# Single source of truth for the Rust toolchain. CI's RUST_IMAGE in
+# .gitlab-ci.yml is pinned to the same version so local and CI agree.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy"]
+targets = ["x86_64-pc-windows-msvc"]

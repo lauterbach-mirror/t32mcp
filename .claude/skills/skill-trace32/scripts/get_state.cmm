@@ -1,0 +1,20 @@
+LOCAL &ppd
+&ppd=OS.PresentPracticeDirectory()
+
+PRINT "Core: " CPUFAMILY() " (" CPU() ")"
+
+IF CPUFAMILY()=="RISCV"
+(
+    PRINT "    64 bit: " CPUIS64BIT()
+)
+
+PRINT "Running: " STATE.RUN()
+
+IF !STATE.RUN()
+(
+    PRINT "    " STATE.TARGET()
+)
+
+DO &ppd/core_get_registers.cmm
+
+ENDDO

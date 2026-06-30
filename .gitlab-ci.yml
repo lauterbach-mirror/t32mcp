@@ -1,0 +1,251 @@
+# You can override the included template(s) by including variable overrides
+# SAST customization: https://docs.gitlab.com/user/application_security/sast/#available-cicd-variables
+# Secret Detection customization: https://docs.gitlab.com/user/application_security/secret_detection/pipeline/configure/
+# Dependency Scanning customization: https://docs.gitlab.com/user/application_security/dependency_scanning/dependency_scanning_sbom/#customizing-analyzer-behavior
+# Container Scanning customization: https://docs.gitlab.com/user/application_security/container_scanning/#customizing-analyzer-behavior
+# Note that environment variables can be set in several places
+# See https://docs.gitlab.com/ci/variables/#cicd-variable-precedence
+
+stages:
+  - test
+  - secret-detection
+  - build
+  - release
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/Secret-Detection.gitlab-ci.yml
+
+# A release is cut by manually running a pipeline on the default branch with a
+# RELEASE_VERSION variable (e.g. v0.1.0). The release job creates the tag only
+# after the build succeeds. Block pipelines for tag refs so the tag created by
+# that job does not start a second, redundant pipeline.
+workflow:
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    # Release pipeline: the SAST/secret-detection scans already ran on the push
+    # that landed this commit, so disable them here via the templates' own
+    # *_DISABLED switches. Only verify:release + build + release run.
+    - if: $RELEASE_VERSION
+      variables:
+        SAST_DISABLED: "true"
+        SECRET_DETECTION_DISABLED: "true"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+variables:
+  SECRET_DETECTION_ENABLED: 'true'
+  # Pinned to match t32mcp-rs/rust-toolchain.toml so CI and local agree.
+  # Bump both together when upgrading.
+  RUST_IMAGE: 'rust:1.96-bookworm'
+  # Keep cargo + xwin downloads inside the project dir so they can be cached.
+  CARGO_HOME: '$CI_PROJECT_DIR/.cargo'
+  XWIN_CACHE_DIR: '$CI_PROJECT_DIR/.xwin-cache'
+
+sast:
+  stage: test
+
+secret_detection:
+  stage: secret-detection
+
+# ---------------------------------------------------------------------------
+# Checks (run on every push and on tags)
+# ---------------------------------------------------------------------------
+
+# Shared settings for the lint/test jobs. The crate lives in t32mcp-rs/.
+.rust-check:
+  stage: test
+  image: $RUST_IMAGE
+  rules:
+    # Skip lint/test in the release pipeline; they already ran on the push that
+    # landed this commit. The build is gated on verify:release instead.
+    - if: $RELEASE_VERSION
+      when: never
+    - if: $CI_COMMIT_BRANCH
+  cache:
+    key: "cargo-$CI_JOB_NAME"
+    paths:
+      - .cargo/registry/index/
+      - .cargo/registry/cache/
+      - .cargo/git/db/
+      - t32mcp-rs/target/
+  before_script:
+    # bindgen (build.rs) needs libclang to parse lib/t32.h.
+    - apt-get update && apt-get install -y --no-install-recommends clang libclang-dev
+
+clippy:
+  extends: .rust-check
+  script:
+    - rustup component add clippy
+    - cd t32mcp-rs
+    # --keep-going keeps compiling lib/bin/tests after the first failure so a
+    # single run reports every lint instead of one-per-pipeline.
+    - cargo clippy --all-targets --all-features --keep-going -- -D warnings
+
+# The integration tests in tests/ require a live TRACE32 (T32_Init), which 
+# the current CI runners do not have, so we only verify they compile.
+# Switch to a real run (e.g. `cargo test -- --test-threads=1`) once a runner with
+# TRACE32 exists.
+test:
+  extends: .rust-check
+  script:
+    - cd t32mcp-rs
+    - cargo test --all-targets --no-run
+
+# Release gate: only present when a release is requested via RELEASE_VERSION.
+# Runs in the first stage so a version mismatch or missing CHANGELOG section
+# fails fast, before the expensive cross-compile builds.
+verify:release:
+  stage: test
+  image: alpine:latest
+  rules:
+    - if: $RELEASE_VERSION
+  script:
+    - sh ci/check_version.sh "$RELEASE_VERSION"
+    - sh ci/extract_changelog.sh "$RELEASE_VERSION" > /dev/null
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+
+# Shared settings for the Rust build jobs. The crate lives in t32mcp-rs/.
+.rust-build:
+  stage: build
+  image: $RUST_IMAGE
+  # Gate the build on the release check only: if verify:release fails, no build
+  # starts. (clippy/test/security are skipped in the release pipeline.)
+  needs:
+    - verify:release
+  cache:
+    # Per-job cache so the Linux and Windows toolchains don't clobber each other.
+    key: "cargo-$CI_JOB_NAME"
+    paths:
+      - .cargo/bin/
+      - .cargo/registry/index/
+      - .cargo/registry/cache/
+      - .cargo/git/db/
+      - .xwin-cache/
+      - t32mcp-rs/target/
+  rules:
+    # Builds only feed the release, so run them only when a release is requested
+    # (manual pipeline with RELEASE_VERSION set). rust-toolchain.toml pins the
+    # same toolchain as CI, so a local build matches the release build.
+    - if: $RELEASE_VERSION
+  artifacts:
+    name: "$CI_JOB_NAME"
+    paths:
+      - dist/
+    expire_in: 1 week
+
+build:linux:
+  extends: .rust-build
+  before_script:
+    # bindgen (build.rs) needs libclang to parse lib/t32.h.
+    - apt-get update && apt-get install -y --no-install-recommends clang libclang-dev
+  script:
+    - cd t32mcp-rs
+    - cargo build --release
+    - mkdir -p "$CI_PROJECT_DIR/dist"
+    - cp target/release/t32mcp "$CI_PROJECT_DIR/dist/t32mcp-linux-x86_64"
+
+build:windows:
+  extends: .rust-build
+  before_script:
+    # clang/llvm/lld for bindgen + the cargo-xwin MSVC link step.
+    - apt-get update && apt-get install -y --no-install-recommends clang libclang-dev llvm lld
+    - rustup target add x86_64-pc-windows-msvc
+    # cargo installs to $CARGO_HOME/bin (here inside the cached .cargo dir), which
+    # is not on PATH, so check the file directly. A cached binary otherwise makes
+    # `cargo install` fail with "already exists".
+    - test -x "$CARGO_HOME/bin/cargo-xwin" || cargo install --locked cargo-xwin
+  script:
+    - cd t32mcp-rs
+    - cargo xwin build --release --target x86_64-pc-windows-msvc
+    - mkdir -p "$CI_PROJECT_DIR/dist"
+    - cp target/x86_64-pc-windows-msvc/release/t32mcp.exe "$CI_PROJECT_DIR/dist/t32mcp-windows-x86_64.exe"
+
+# Bundle the TRACE32 skill directory as a zip release artifact.
+package:skill:
+  stage: build
+  image: alpine:latest
+  needs:
+    - verify:release
+  rules:
+    - if: $RELEASE_VERSION
+  before_script:
+    - apk add --no-cache zip
+  script:
+    - mkdir -p dist
+    - cd .claude/skills
+    - zip -r "$CI_PROJECT_DIR/dist/skill-trace32.zip" skill-trace32
+  artifacts:
+    name: skill-trace32
+    paths:
+      - dist/
+    expire_in: 1 week
+
+# ---------------------------------------------------------------------------
+# Release (manual pipeline on the default branch with RELEASE_VERSION set)
+# ---------------------------------------------------------------------------
+
+# Upload the built binaries to the project's Generic Package Registry.
+upload:
+  stage: release
+  image: curlimages/curl:latest
+  rules:
+    - if: $RELEASE_VERSION
+  needs:
+    - build:linux
+    - build:windows
+    - package:skill
+  variables:
+    PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/t32mcp/${RELEASE_VERSION}"
+  script:
+    - |
+      curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file dist/t32mcp-linux-x86_64 \
+        "${PACKAGE_REGISTRY_URL}/t32mcp-linux-x86_64"
+    - |
+      curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file dist/t32mcp-windows-x86_64.exe \
+        "${PACKAGE_REGISTRY_URL}/t32mcp-windows-x86_64.exe"
+    - |
+      curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file dist/skill-trace32.zip \
+        "${PACKAGE_REGISTRY_URL}/skill-trace32.zip"
+
+# Create the git tag and the GitLab Release, but only after the build and
+# upload jobs succeed, so a failed build never leaves a dangling tag. release-cli
+# creates the tag from CI_COMMIT_SHA using the built-in CI_JOB_TOKEN, so no
+# personal/project access token is needed. Tag pipelines are disabled in the
+# workflow rules, so creating the tag does not start another pipeline.
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $RELEASE_VERSION
+  needs:
+    - upload
+  variables:
+    PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/t32mcp/${RELEASE_VERSION}"
+  script:
+    # Release notes from CHANGELOG.md; exits non-zero if the section is missing.
+    - sh ci/extract_changelog.sh "$RELEASE_VERSION" > release_notes.md
+    - echo "Release notes for $RELEASE_VERSION:" && cat release_notes.md
+  release:
+    tag_name: "$RELEASE_VERSION"
+    ref: "$CI_COMMIT_SHA"
+    name: "t32mcp $RELEASE_VERSION"
+    description: release_notes.md
+    assets:
+      links:
+        - name: "t32mcp-linux-x86_64"
+          url: "${PACKAGE_REGISTRY_URL}/t32mcp-linux-x86_64"
+          link_type: "package"
+        - name: "t32mcp-windows-x86_64.exe"
+          url: "${PACKAGE_REGISTRY_URL}/t32mcp-windows-x86_64.exe"
+          link_type: "package"
+        - name: "skill-trace32.zip"
+          url: "${PACKAGE_REGISTRY_URL}/skill-trace32.zip"
+          link_type: "package"

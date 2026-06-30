@@ -1,0 +1,93 @@
+; Schema:
+;
+; {
+;   "type": "object",
+;   "properties": {
+;     "wait": { "type": "string" }
+;   },
+;   "required": []
+; }
+;
+; Example:
+; { }
+; { "wait": "1000." }
+
+ON ERROR JUMPTO errorcleanup
+PRIVATE &line &wait &start_time &elapsed
+ENTRY %LINE &line
+
+PRINT ""
+PRINT "[MCP start] -- Called 'set_running.cmm' with arguments: " &line
+
+&wait=STRing.SCANAndExtract("&line","wait=","40000.")
+
+&wait_seconds=&wait/1000.0
+
+IF &wait_seconds>30.
+(
+  PRINT %WARNING "Warning: Wait time larger than 30 seconds not supported. Will run without timeout."
+  &wait=0.
+)
+
+WAIT TRUE() 10.ms ; Force reset of TIMEOUT() state
+
+&start_time=OS.TIMER()
+
+IF !STATE.RUN()
+(
+  Go
+  PRINT "Success: Target was set to running."
+)
+ELSE
+(
+  PRINT %WARNING "Warning: Target was already running."
+)
+
+IF &wait==0.
+(
+  PRINT "No timeout applied, but target may stop eventually e.g. because of a breakpoint."
+)
+ELSE
+(
+  Screen.WAIT !STATE.RUN() &wait_seconds
+)
+
+IF TIMEOUT()==TRUE()
+(
+  ; should still be running, so must break
+  Break
+  PRINT "Stopped because of timeout (after " &wait " milliseconds)."
+)
+ELSE IF !STATE.RUN()
+(
+  ; stopped
+  &elapsed=OS.TIMER()-&start_time
+  IF &wait==0.
+  (
+    ; was supposed to run indefinitely
+    PRINT "Stopped after " &elapsed " milliseconds."
+  )
+  ELSE
+  (
+    ; had a timeout but stopped earlier
+    PRINT "Stopped before timeout (after " &elapsed " milliseconds)."
+  )
+  PRINT "STATE.TARGET() is '" STATE.TARGET() "'"
+)
+
+JUMPTO cleanup
+
+errorcleanup:
+  PRINT %ERROR "^^^ (error line on previous line): Encountered error during execution, caused by '" ERROR.CMDLINE() "'"
+  PRINT "[MCP end] -- Exiting 'set_running.cmm'"
+  PRINT ""
+  ENDDO
+
+cleanup:
+  IF !STATE.RUN()
+  (
+    PRINT "Stopped at: Register(PC)=" Register(PP)
+  )
+  PRINT "[MCP end] -- Exiting 'set_running.cmm'"
+  PRINT ""
+  ENDDO

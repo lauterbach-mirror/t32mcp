@@ -1,0 +1,29 @@
+; Schema:
+;
+; {
+;   "type": "object",
+;   "properties": {
+;     "wildcard": { "type": "string" }
+;   },
+;   "required": ["wildcard"]
+; }
+;
+; Example:
+; { "wildcard": "*main"}
+
+
+PRIVATE &line &wildcard
+ENTRY %LINE &line
+
+&wildcard=STRing.SCANAndExtract("&line","wildcard=","")
+
+IF "&wildcard"==""
+(
+    PRINT %ERROR "wildcard not provided"
+    ENDDO
+)
+
+PRinTer.Area
+WinPrint.sYmbol.Browse &wildcard
+
+ENDDO

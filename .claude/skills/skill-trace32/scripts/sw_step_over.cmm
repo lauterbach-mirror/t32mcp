@@ -1,0 +1,37 @@
+; Schema:
+;
+; {
+;   "type": "object",
+;   "properties": {
+;     "count": { "type": "string" },
+;   },
+;   "required": []
+; }
+;
+; Examples:
+;
+; { }
+; { "count": "10." }
+
+
+PRIVATE &line &count &ppd
+ENTRY %LINE &line
+
+&count=STRing.SCANAndExtract("&line","count=","1.")
+
+LOCAL &i
+&i=0
+
+; Enter HLL step mode first
+Silent.Step.Hll 0.
+
+WHILE &i<&count
+(
+    Step.Over
+    &i=&i+1
+)
+
+&ppd=OS.PresentPracticeDirectory()
+DO &ppd/sw_get_source.cmm
+
+ENDDO

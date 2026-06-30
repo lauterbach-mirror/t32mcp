@@ -1,0 +1,37 @@
+; Schema:
+;
+; {
+;   "type": "object",
+;   "properties": {
+;     "file": { "type": "string" },
+;     "line": {"type": "string" }
+;   },
+;   "required": ["file", "line"]
+; }
+;
+; Example:
+; { "file": "main.c", "line": "13." }
+; { "file": "lib.h", "line": "10." }
+
+PRIVATE &line &file &line
+ENTRY %LINE &line
+
+&file=STRing.SCANAndExtract("&line","file=","")
+&line=STRing.SCANAndExtract("&line","line=","")
+
+IF "&file"==""
+(
+    PRINT %ERROR "file not provided"
+    ENDDO
+)
+
+IF "&line"==""
+(
+    PRINT %ERROR "line not provided"
+    ENDDO
+)
+
+&line=FORMAT.Decimal(0.,&line)
+
+Break.Set \"&file"\&line
+ENDDO

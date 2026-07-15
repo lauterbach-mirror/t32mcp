@@ -1,0 +1,32 @@
+The TRACE32 Application Programming Interface for Remote Control and JTAG Access
+(“Remote API”) contains source code for the client interface, which is copyright
+by Lauterbach. These licensing terms and conditions apply to all files referred to
+in this document.
+
+You may:
+- share the original C source code of the TRACE32 Remote API with others (e.g. in
+  a public repository)
+- use the original source code of the Remote API in your own software (commercial
+  and non-commercial)
+- modify the original source code if necessary for compilation or integration into
+  your product or a library used by it
+- port the Remote API source code to other computer languages
+
+You may not:
+- sell or sub-license the original source code of the TRACE32 Remote API
+- modify the original source code, or any derived works, in a away that changes or
+  extends the APDUs (Application Protocol Data Units) that it produces
+- distribute any modified source code to others
+- implement the host/server part of the Lauterbach TRACE32 Remote API in your own
+  product (if you think you need this, please contact us to negotiate different
+  licensing terms for this)
+
+You have to:
+- include these Licensing Terms in any derived works
+- inform Lauterbach if you use the original source code, or any derived works, in
+  a commercial product
+
+Disclaimer: The API source code is designed to remote-control Lauterbach TRACE32
+software. We provide this code “as is” without any implicit or explicit
+warranties, and without taking responsibility for its correctness or for its
+fitness for a specific purpose.

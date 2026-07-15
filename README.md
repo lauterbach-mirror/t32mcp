@@ -32,9 +32,13 @@ t32mcp/                                # this repository
 ## MCP server
 
 You can either download and use one of the prebuilt executables (if compatible) or build it yourself from source.
-**Note:** the path to the executable needs to be accessible by the MCP client (your AI agent, e.g. Claude Code), and the executable needs to be able to communicate with TRACE32 via the remote API (TCP by default).
+For simplicity the rest of this README assumes the executable sits at `<your-path>/t32mcp/t32mcp` / `<your-path>\t32mcp\t32mcp.exe`.
 
-For simplicity the rest of this README assumes the executable sits at `/<your-path>/t32mcp/t32mcp` / `C:\<your-path>\t32mcp\t32mcp.exe`.
+**Note:** Currently this MCP setup only works when the MCP server and TRACE32 are runninig on the same system. Specifically:
+- the path to the MCP server executable needs to be accessible by the MCP client (your AI agent, e.g. Claude Code)
+- the MCP server executable needs to be able to communicate with TRACE32 via:
+  1. the remote API (TCP by default)
+  2. IPC pipes (used in order to get the results from TRACE32 back to the MCP server)
 
 ### Download a prebuilt release (recommended)
 
@@ -93,7 +97,7 @@ ENDDO
 ### MCP
 
 To add our MCP server, follow the instructions for your AI agent. Usually, this includes specifying the protocol, which should be set to `stdio` (sometimes also `local`).
-Then set the command / path to the executable `/<your-path>/t32mcp/t32mcp` / `C:\<your-path>\t32mcp\t32mcp.exe`.
+Then set the command / path to the executable `<your-path>/t32mcp/t32mcp` / `<your-path>\t32mcp\t32mcp.exe`.
 
 **Important:** also add the command argument `--skills <path-to-your-skills>`. What to set for `<path-to-your-skills>` will depend on how you configured your skills (next section).
 

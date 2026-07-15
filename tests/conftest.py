@@ -8,14 +8,7 @@ import subprocess
 import time
 
 LOGGER = logging.getLogger("mcp")
-
-RELATIVE_PATH_TO_SERVER = (
-    "../t32mcp-rs/target/debug/t32mcp"
-    if os.name == "posix"
-    else "../t32mcp-rs/target/debug/t32mcp.exe"
-)
 TESTDIR_NAME = "tests"
-
 
 def get_testdir_path(request):
     path = []
@@ -28,12 +21,25 @@ def get_testdir_path(request):
     assert testdir_found
     return path
 
+def t32mcp_path(request):
+    if "T32MCP" in os.environ:
+        path_to_server = os.environ["T32MCP"].replace('"', "").replace("'", "")
+    else:
+        RELATIVE_PATH_TO_SERVER = (
+            "../t32mcp-rs/target/debug/t32mcp"
+            if os.name == "posix"
+            else "../t32mcp-rs/target/debug/t32mcp.exe"
+        )
+        path = get_testdir_path(request)
+        path.append(RELATIVE_PATH_TO_SERVER)
+        path_to_server = os.path.join(*path)
+
+    assert(os.path.exists(path_to_server))
+    return path_to_server
 
 @pytest.fixture(scope="module")
 def local_mcp_server(request) -> Client:
-    path = get_testdir_path(request)
-    path.append(RELATIVE_PATH_TO_SERVER)
-    path_to_server = os.path.join(*path)
+    path_to_server = t32mcp_path(request)
     LOGGER.info(f"Setting up STDIO server: {path_to_server}")
     transport = StdioTransport(command=path_to_server, args=[])
     client = Client(transport)
@@ -41,9 +47,7 @@ def local_mcp_server(request) -> Client:
 
 @pytest.fixture(scope="module")
 def remote_mcp_server(request) -> Client:
-    path = get_testdir_path(request)
-    path.append(RELATIVE_PATH_TO_SERVER)
-    path_to_server = os.path.join(*path)
+    path_to_server = t32mcp_path(request)
     PORT = 8000
     LOGGER.info(f"Setting up HTTP server: {path_to_server} (port {PORT})")
     cmd_line = f"{path_to_server} --http {PORT}"

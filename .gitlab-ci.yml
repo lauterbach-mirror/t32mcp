@@ -168,6 +168,26 @@ build:linux:
     - mkdir -p "$CI_PROJECT_DIR/dist"
     - cp target/release/t32mcp "$CI_PROJECT_DIR/dist/t32mcp-linux-x86_64"
 
+# ARM lib/libt32api64.a doesn't exist yet, so this job can only get as far as
+# the final link step (see lib/t32.h and build.rs). Once an aarch64 t32api lib
+# is added, drop allow_failure and add this job to upload's/release's needs +
+# assets, mirroring build:linux.
+build:linux-arm64:
+  extends: .rust-build
+  allow_failure: true
+  before_script:
+    # bindgen (build.rs) needs libclang to parse lib/t32.h (runs on the host
+    # arch even when cross-compiling). gcc-aarch64-linux-gnu + the cross glibc
+    # headers are the actual aarch64 toolchain; the linker itself is
+    # configured in t32mcp-rs/.cargo/config.toml.
+    - apt-get update && apt-get install -y --no-install-recommends clang libclang-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+    - rustup target add aarch64-unknown-linux-gnu
+  script:
+    - cd t32mcp-rs
+    - cargo build --release --target aarch64-unknown-linux-gnu
+    - mkdir -p "$CI_PROJECT_DIR/dist"
+    - cp target/aarch64-unknown-linux-gnu/release/t32mcp "$CI_PROJECT_DIR/dist/t32mcp-linux-aarch64"
+
 build:windows:
   extends: .rust-build
   before_script:

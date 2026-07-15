@@ -9,7 +9,7 @@
 
 use anyhow::Result;
 use std::ffi::{CStr, CString};
-use std::os::raw::c_void;
+use std::os::raw::{c_char, c_void};
 use std::ptr;
 
 #[allow(warnings)]
@@ -137,7 +137,7 @@ pub fn t32_fnc(fnc: String) -> Result<String, String> {
     let e = unsafe {
         t32::T32_ExecuteFunction(
             fnc.as_ptr(),
-            buffer.as_mut_ptr() as *mut i8,
+            buffer.as_mut_ptr() as *mut c_char,
             buffer_size,
             &mut result_type,
         )
@@ -148,7 +148,7 @@ pub fn t32_fnc(fnc: String) -> Result<String, String> {
         ));
     }
 
-    let result = unsafe { CStr::from_ptr(buffer.as_ptr() as *const i8) }
+    let result = unsafe { CStr::from_ptr(buffer.as_ptr() as *const c_char) }
         .to_string_lossy()
         .into_owned();
 

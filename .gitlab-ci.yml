@@ -73,6 +73,7 @@ secret_detection:
   before_script:
     # bindgen (build.rs) needs libclang to parse lib/t32.h.
     - apt-get update && apt-get install -y --no-install-recommends clang libclang-dev
+    - cargo install --locked uv
 
 clippy:
   extends: .rust-check
@@ -83,7 +84,7 @@ clippy:
     # single run reports every lint instead of one-per-pipeline.
     - cargo clippy --all-targets --all-features --keep-going -- -D warnings
 
-# The integration tests in tests/ require a live TRACE32 (T32_Init), which 
+# The integration tests in tests/ require a live TRACE32 (T32_Init), which
 # the current CI runners do not have, so we only verify they compile.
 # Switch to a real run (e.g. `cargo test -- --test-threads=1`) once a runner with
 # TRACE32 exists.
@@ -91,7 +92,10 @@ test:
   extends: .rust-check
   script:
     - cd t32mcp-rs
+    - cargo build
     - cargo test --all-targets --no-run
+    - cd ../tests
+    - uv run pytest
 
 # Release gate: only present when a release is requested via RELEASE_VERSION.
 # Runs in the first stage so a version mismatch or missing CHANGELOG section

@@ -74,7 +74,7 @@ pub async fn t32_open_pipe(name: &str) -> Result<Receiver, String> {
     Ok(connection)
 }
 
-pub fn t32_connect(port: u32) -> Result<(), String> {
+pub fn t32_connect(port: u16) -> Result<(), String> {
     let mut channel: *mut c_void = ptr::null_mut();
 
     let e = unsafe { t32::T32_RequestChannelNetTcp(&mut channel as *mut *mut c_void) };

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-15
+### Added
+- Support HTTP transport layer.
+- Update provided server info: t32mcp will not longer be displayed as `rmcp` in clients like VSCode.
+- Add `--version` flag.
+- Add pytest-based integration test suite which is also added to CI.
+
+### Changed
+- Format of `--help` output: Optional arguments are no longer displayed on first line.
+- Change all `CRLF` line terminators to `LF`.
+
 ## [0.1.0] - 2026-06-30
 ### Added
 - Initial release of the TRACE32 MCP server.

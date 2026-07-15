@@ -9,9 +9,14 @@ use anyhow::Result;
 use rmcp::{
     ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{ServerCapabilities, ServerInfo},
+    model::{Implementation, ServerCapabilities, ServerInfo},
     schemars, tool, tool_handler, tool_router,
-    transport::stdio,
+    transport::{
+        stdio,
+        streamable_http_server::{
+            StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+        },
+    },
 };
 
 use rand::Rng;
@@ -59,7 +64,7 @@ static CONNECTED: AtomicBool = AtomicBool::new(false);
 pub struct T32Options {
     pub unlock_all_tools: bool,
     pub skills_base: String,
-    pub port: u32,
+    pub port: u16,
     pub pipe_name: String,
 }
 
@@ -374,11 +379,23 @@ Important: Only call this tool after a execute_practice_skill that has NOT finis
 impl ServerHandler for T32 {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
+            server_info: Implementation {
+                name: env!("CARGO_CRATE_NAME").to_owned(),
+                title: Some("Lauterbach TRACE32 MCP Server".into()),
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+                icons: None,
+                website_url: Some("https://gitlab.com/lauterbach/t32mcp".into()),
+            },
             instructions: Some("TRACE32 Remote API".into()),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             ..Default::default()
         }
     }
+}
+
+enum McpTransport {
+    Stdio,
+    Http { port: u16 },
 }
 
 /// npx @modelcontextprotocol/inspector cargo run
@@ -393,10 +410,15 @@ async fn main() -> Result<()> {
     };
 
     let mut args = env::args().skip(1); // skip program name
+    let mut transport = McpTransport::Stdio;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
                 print_help();
+                return Ok(());
+            }
+            "--version" => {
+                print_version();
                 return Ok(());
             }
             "--t32chat" => {
@@ -411,22 +433,34 @@ async fn main() -> Result<()> {
             },
             "--port" => match args.next() {
                 Some(port) => {
-                    options.port = port.parse().expect("Not a number!");
+                    options.port = port.parse().expect("Invalid --port argument");
                 }
                 None => {
                     print_help();
                     return Ok(());
                 }
             },
-            _ => {}
+            "--http" => match args.next() {
+                Some(port) => {
+                    let http_port: u16 = port.parse().expect("Invalid --http argument");
+                    transport = McpTransport::Http { port: http_port };
+                }
+                None => {
+                    print_help();
+                    return Ok(());
+                }
+            },
+            _ => {
+                print_help();
+                return Ok(());
+            }
         }
     }
 
     if options.skills_base.is_empty() {
         let path: PathBuf = if cfg!(target_os = "windows") {
-            let appdata = env::var("APPDATA").expect(
-                "Skills base directory cannot be found (APPDATA not set)",
-            );
+            let appdata = env::var("APPDATA")
+                .expect("Skills base directory cannot be found (APPDATA not set)");
             [appdata.as_str(), "TRACE32", "skills"].iter().collect()
         } else {
             // Linux/macOS: default to $XDG_CONFIG_HOME or ~/.config
@@ -446,23 +480,64 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
-    tracing::info!("Starting T32 MCP server");
-    let service = T32::new(options).serve(stdio()).await.inspect_err(|e| {
-        tracing::error!("serving error: {:?}", e);
-    })?;
+    match transport {
+        McpTransport::Stdio => {
+            tracing::info!("Starting T32 MCP server (stdio)");
 
-    service.waiting().await?;
+            let service = T32::new(options.clone())
+                .serve(stdio())
+                .await
+                .inspect_err(|e| {
+                    tracing::error!("serving error: {:?}", e);
+                })?;
+
+            service.waiting().await?;
+        }
+        McpTransport::Http { port } => {
+            let bind_address = format!("127.0.0.1:{port}");
+            let ct = tokio_util::sync::CancellationToken::new();
+
+            let service = StreamableHttpService::new(
+                move || Ok(T32::new(options.clone())),
+                LocalSessionManager::default().into(),
+                StreamableHttpServerConfig::default(),
+            );
+
+            let router = axum::Router::new().nest_service("/mcp", service);
+            tracing::info!("Starting T32 MCP server (http://{bind_address}/mcp)");
+
+            let tcp_listener = tokio::net::TcpListener::bind(bind_address).await?;
+            axum::serve(tcp_listener, router)
+                .with_graceful_shutdown(async move {
+                    tokio::signal::ctrl_c().await.unwrap();
+                    ct.cancel();
+                })
+                .await?;
+        }
+    }
+
     Ok(())
 }
 
-fn print_help() {
-    println!(
-        "t32mcp [--t32chat] [--port PORT] [--skills DIR]
+fn print_version() {
+    let v = env!("CARGO_PKG_VERSION").to_owned();
+    let v = format!("t32mcp v{v}");
 
-Options:
+    #[cfg(debug_assertions)]
+    let v = format!("{v}.debug");
+
+    println!("{v}");
+}
+
+fn print_help() {
+    print_version();
+    println!(
+        "Options:
+  --http PORT      Run as remote MCP server (served over Http, no auth)
   --port PORT      TRACE32 Remote API TCP port (default: 20000)
   --skills DIR     Sets the skills base directory to DIR (default: %APPDATA%/TRACE32/skill)
   --t32chat        Unlocks execute_practice tool
+ --version         Print version number
   -h, --help       Print this help message"
     );
 }

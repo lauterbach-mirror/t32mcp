@@ -9,7 +9,7 @@ use tokio::{
     time::sleep,
 };
 
-static T32_PORT: u32 = 20000;
+static T32_PORT: u16 = 20000;
 
 #[test]
 fn hello_world() {

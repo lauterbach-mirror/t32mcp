@@ -18,7 +18,7 @@ You need to stay structured in your procedure:
 
 ## The TRACE32 skill provides everything you need
 
-You will have access to the world's most powerful debugger, Lauterbach's TRACE32:
+You have access to a Lauterbach TRACE32 debugger which you can use as follows:
 - The skill trace32's description `SKILL.md ` will provide you much more details on how to debug embedded systems. Follow them closely.
 - The MCP server `t32mcp` will provide you runtime access to TRACE32 which is connected to the target system.
 

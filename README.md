@@ -98,14 +98,12 @@ Both replace all `lauterbach-*` skills in the directory (install, update or rese
 
 Refer to the documentation of your AI agent (e.g. Claude Code, VSCode, ...) on how to register MCP servers and where to put the agent skills.
 
-#### Visual Studio Code
-
-Get the official [Lauterbach AI](https://marketplace.visualstudio.com/items?itemName=lauterbach.ai) extension.
+Note: An execution policy must always be specified. Depending on the selected policy, you might also need to provide further arguments.
 
 #### [Claude Code](https://code.claude.com/docs/en/mcp)
 
 ```
-$ claude mcp add-json t32mcp '{"type":"stdio","command":"/home/you/t32mcp/t32mcp","args":[]}'
+$ claude mcp add-json t32mcp '{"type":"stdio","command":"/home/you/t32mcp/t32mcp","args":["--execution-policy", "<policy>", "<additional arg>"]}'
 ```
 
 #### [Mistral Vibe](https://docs.mistral.ai/vibe/code/cli/configuration)
@@ -117,7 +115,11 @@ Inside `~/.vibe/config.toml`:
 name = "t32mcp"
 transport = "stdio"
 command = "/path/to/t32mcp"
-args = []
+args = [
+    "--execution-policy",
+    "<policy>",
+    "<additional arg>",
+]
 ```
 
 ## Execution Policies

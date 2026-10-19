@@ -18,7 +18,9 @@ include:
 
 # A release is cut by manually running a pipeline on the default branch with a
 # RELEASE_VERSION variable (e.g. v0.1.0). The release job creates the tag only
-# after the build succeeds. Block pipelines for tag refs so the tag created by
+# after the build succeeds. Add RELEASE_DRY_RUN=true to test the release
+# pipeline on any branch: verify + build run, but nothing is uploaded, tagged
+# or released. Block pipelines for tag refs so the tag created by
 # that job does not start a second, redundant pipeline.
 workflow:
   rules:
@@ -116,6 +118,14 @@ verify:release:
   rules:
     - if: $RELEASE_VERSION
   script:
+    # Real releases only come from the default branch; other branches must
+    # opt into a dry run.
+    - |
+      if [ "$CI_COMMIT_BRANCH" != "$CI_DEFAULT_BRANCH" ] && [ "$RELEASE_DRY_RUN" != "true" ]; then
+        echo "ERROR: releases are only allowed from $CI_DEFAULT_BRANCH (got: $CI_COMMIT_BRANCH)." >&2
+        echo "Set RELEASE_DRY_RUN=true to test the release pipeline on this branch." >&2
+        exit 1
+      fi
     - sh ci/check_version.sh "$RELEASE_VERSION"
     - sh ci/extract_changelog.sh "$RELEASE_VERSION" > /dev/null
 
@@ -209,12 +219,34 @@ package:skill:
 # Release (manual pipeline on the default branch with RELEASE_VERSION set)
 # ---------------------------------------------------------------------------
 
+# Stand-in for upload + release when RELEASE_DRY_RUN=true: checks that all
+# release files were built and that the release notes render, without
+# touching the package registry or creating a tag/release.
+release:dry-run:
+  stage: release
+  image: alpine:latest
+  rules:
+    - if: $RELEASE_VERSION && $RELEASE_DRY_RUN == "true"
+  needs:
+    - build:linux
+    - build:linux-arm64
+    - build:windows
+    - package:skill
+  script:
+    - ls -l dist/
+    - test -f dist/t32mcp-linux-x86_64
+    - test -f dist/t32mcp-linux-aarch64
+    - test -f dist/t32mcp-windows-x86_64.exe
+    - test -f dist/skills.zip
+    - sh ci/extract_changelog.sh "$RELEASE_VERSION" > release_notes.md
+    - echo "Release notes for $RELEASE_VERSION:" && cat release_notes.md
+
 # Upload the built binaries to the project's Generic Package Registry.
 upload:
   stage: release
   image: curlimages/curl:latest
   rules:
-    - if: $RELEASE_VERSION
+    - if: $RELEASE_VERSION && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $RELEASE_DRY_RUN != "true"
   needs:
     - build:linux
     - build:linux-arm64
@@ -245,7 +277,7 @@ release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   rules:
-    - if: $RELEASE_VERSION
+    - if: $RELEASE_VERSION && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $RELEASE_DRY_RUN != "true"
   needs:
     - upload
   variables:

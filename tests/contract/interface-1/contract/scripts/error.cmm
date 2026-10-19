@@ -1,0 +1,6 @@
+; { "interface": 1, "strict": true }
+
+PRINT "before the error"
+NoSuchCommand.Really
+PRINT "after the error"
+ENDDO

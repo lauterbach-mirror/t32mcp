@@ -1,0 +1,5 @@
+WHILE TRUE()
+(
+  WAIT 50.ms
+)
+ENDDO

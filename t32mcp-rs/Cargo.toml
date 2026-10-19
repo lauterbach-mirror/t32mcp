@@ -1,47 +1,18 @@
 [package]
 name = "t32mcp"
-version = "0.2.2"
+version = "0.3.0"
 license = "Apache-2.0"
 edition = "2024"
 
-[dependencies]
-rmcp = { version = "3.0.1", features = [
-    "server",
-    "macros",
-    "client",
-    "transport-io",
-    "transport-streamable-http-server",
-    "auth",
-    "elicitation",
-    "schemars",
-] }
-tokio = { version = "1.53", features = [
-    "macros",
-    "rt",
-    "rt-multi-thread",
-    "io-std",
-    "signal",
-    "full",
-    "tracing"
-] }
-serde = { version = "1.0", features = ["derive"] }
-anyhow = "1.0"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = [
-    "env-filter",
-    "std",
-    "fmt",
-] }
-rand = { version = "0.10", features = ["std"] }
-axum = { version = "0.8", features = ["macros"] }
-schemars = "1.2"
-tokio-util = { version = "0.7" }
-tempfile = "3.27.0"
-interprocess = { version = "2.4.2", features = ["tokio"] }
-serde_json = "1.0.151"
-
-[dev-dependencies]
-tokio-util = { version = "0.7", features = ["codec"] }
-
 [build-dependencies]
-bindgen = "0.72.1"
+serde_json = "1.0.151"
+schemars = "0.8.22"
+typify = "0.8.0"
+rustfmt-wrapper = "0.2.1"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.151"
+interprocess = { version = "2.4.2" }
+tiny_http = "0.12.0"
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl"] }

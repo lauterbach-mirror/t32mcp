@@ -1,0 +1,19 @@
+; { "interface": 1, "strict": true }
+
+ERROR.RESet
+ON ERROR JUMPTO errorcleanup
+PRINT "before the error"
+NoSuchCommand.Really
+PRINT "after the error"
+ENDDO
+
+errorcleanup:
+(
+  ON ERROR CONTinue
+  PRINT %ERROR "caught: " ERROR.CMDLINE()
+  PRINT %ERROR "[t32mcp: script failed]"
+  PRINT %WARNING "[MCP end]"
+  ERROR.RESet
+  ON ERROR inherit
+  ENDDO
+)

@@ -1,0 +1,7 @@
+; { "interface": 1, "strict": true }
+
+PRINT "plain line"
+PRINT %WARNING "warning line"
+PRINT %ERROR "error line"
+PRINT "last line"
+ENDDO

@@ -45,7 +45,12 @@ async def test_list_tools(local_mcp_server: Client, remote_mcp_server: Client):
             remote_tools.append(tool)
 
     assert(len(local_tools) == len(remote_tools))
-    assert(len(local_tools) == 3)
+    assert {t.name for t in local_tools} == {
+        "trace32_get_status",
+        "trace32_manage_instances",
+        "trace32_run_script",
+        "trace32_run_command",
+    }
     local_tools.sort(key=lambda t: t.description or "")
     remote_tools.sort(key=lambda t: t.description or "")
     for (tool, duplicate) in zip(local_tools, remote_tools):

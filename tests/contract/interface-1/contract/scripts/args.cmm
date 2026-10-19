@@ -1,0 +1,16 @@
+; {
+;   "interface": 1,
+;   "strict": true,
+;   "arguments": {
+;     "text": { "pattern": "^[^\"&\\x00-\\x1f]*$" },
+;     "number": { "type": "number" }
+;   }
+; }
+
+PRIVATE &line &text &number
+ENTRY %LINE &line
+&text=STRing.SCANAndExtract("&line","text=","")
+&number=STRing.SCANAndExtract("&line","number=","0.")
+PRINT "text=[&text]"
+PRINT "number=" &number+1.
+ENDDO

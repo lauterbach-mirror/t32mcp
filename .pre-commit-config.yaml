@@ -1,0 +1,38 @@
+fail_fast: true
+
+repos:
+- repo: local
+  hooks:
+    - id: renormalize
+      name: renormalize
+      entry: git add --renormalize .
+      language: unsupported
+      pass_filenames: false
+
+    - id: format
+      name: cargo-fmt
+      entry: cargo fmt --manifest-path t32mcp-rs/Cargo.toml
+      language: unsupported
+      types: [rust]
+      pass_filenames: false
+
+    - id: lint
+      name: cargo-clippy
+      entry: cargo clippy --manifest-path t32mcp-rs/Cargo.toml
+      language: unsupported
+      types: [rust]
+      pass_filenames: false
+
+    - id: build
+      name: cargo-build
+      entry: cargo build --manifest-path t32mcp-rs/Cargo.toml
+      language: unsupported
+      types: [rust]
+      pass_filenames: false
+
+    - id: test
+      name: pytest
+      entry: pytest -c tests/pyproject.toml
+      language: unsupported
+      types: [rust]
+      pass_filenames: false

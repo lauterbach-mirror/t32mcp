@@ -1,0 +1,73 @@
+; SPDX-FileCopyrightText: 1989-2026 Lauterbach GmbH
+; SPDX-License-Identifier: Apache-2.0
+; {
+;   "interface": 1,
+;   "strict": true,
+;   "arguments": {
+;   }
+; }
+;
+; Example:
+; { }
+
+; ----- MCP tool script setup boilerplate ---------------
+; prepare error handling and AREA window print output
+ERROR.RESet
+ON ERROR JUMPTO errorcleanup
+PRinTer.Area
+
+; get the current script path
+LOCAL &script_file &abs_path
+&script_file=OS.PresentPracticeFile()
+&abs_path=OS.FILE.ABSPATH("&script_file")
+
+; macros for input line and parsed input vars
+PRIVATE &line &file
+; read input line
+ENTRY %LINE &line
+
+; output header
+PRINT ""
+PRINT %WARNING "[MCP start] (&abs_path), args: &line"
+
+; ----- main script logic -------------------------------
+WinPrint.sYmbol.SourcePATH.List
+
+; the window sYmbol.List.SOURCE truncates the paths, the function returns them in full
+; the first call refreshes the list and prints a warning for every file that is not found
+PRINT "Loaded source files (local path):"
+&file=sYmbol.List.SOURCE(1.,1.,1.)
+WHILE "&file"!=""
+(
+  PRINT "  &file"
+  &file=sYmbol.List.SOURCE(0.,1.,0.)
+)
+PRINT "Source files not found (path from the debug information):"
+&file=sYmbol.List.SOURCE(1.,2.,0.)
+WHILE "&file"!=""
+(
+  PRINT "  &file"
+  &file=sYmbol.List.SOURCE(0.,2.,0.)
+)
+
+; ----- cleanup and error handling boilerplate ----------
+JUMPTO cleanup
+
+errorcleanup:
+(
+  ; prevent further nested errors - could lead to infinite loop
+  ON ERROR CONTinue
+  PRINT %ERROR "^^^ (error message on previous line): Encountered error during execution, caused by '" ERROR.CMDLINE() "'"
+  PRINT %ERROR "[t32mcp: script failed]"
+  PRINT %WARNING "[MCP end]"
+  ERROR.RESet
+  ON ERROR inherit
+  ENDDO
+)
+
+cleanup:
+(
+  PRINT %WARNING "[MCP end]"
+  ON ERROR inherit
+  ENDDO
+)

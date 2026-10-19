@@ -70,10 +70,6 @@ secret_detection:
       - .cargo/registry/cache/
       - .cargo/git/db/
       - t32mcp-rs/target/
-  before_script:
-    # bindgen (build.rs) needs libclang to parse lib/t32.h.
-    - apt-get update && apt-get install -y --no-install-recommends clang libclang-dev
-
 clippy:
   extends: .rust-check
   script:
@@ -107,7 +103,6 @@ test:integration:
   needs:
     - test
   cache: []
-  before_script: []
   script:
     - cd tests
     - uv run pytest
@@ -159,9 +154,6 @@ verify:release:
 
 build:linux:
   extends: .rust-build
-  before_script:
-    # bindgen (build.rs) needs libclang to parse lib/t32.h.
-    - apt-get update && apt-get install -y --no-install-recommends clang libclang-dev
   script:
     - cd t32mcp-rs
     - cargo build --release
@@ -171,11 +163,9 @@ build:linux:
 build:linux-arm64:
   extends: .rust-build
   before_script:
-    # bindgen (build.rs) needs libclang to parse lib/t32.h (runs on the host
-    # arch even when cross-compiling). gcc-aarch64-linux-gnu + the cross glibc
-    # headers are the actual aarch64 toolchain; the linker itself is
-    # configured in t32mcp-rs/.cargo/config.toml.
-    - apt-get update && apt-get install -y --no-install-recommends clang libclang-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+    # gcc-aarch64-linux-gnu + the cross glibc headers are the actual aarch64
+    # toolchain; the linker itself is configured in t32mcp-rs/.cargo/config.toml.
+    - apt-get update && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
   script:
     - cd t32mcp-rs
     - cargo build --release --target aarch64-unknown-linux-gnu
@@ -185,8 +175,6 @@ build:linux-arm64:
 build:windows:
   extends: .rust-build
   before_script:
-    # clang/llvm/lld for bindgen + the cargo-xwin MSVC link step.
-    - apt-get update && apt-get install -y --no-install-recommends clang libclang-dev llvm lld
     - rustup target add x86_64-pc-windows-msvc
     # cargo installs to $CARGO_HOME/bin (here inside the cached .cargo dir), which
     # is not on PATH, so check the file directly. A cached binary otherwise makes
@@ -210,10 +198,9 @@ package:skill:
     - apk add --no-cache zip
   script:
     - mkdir -p dist
-    - cd .claude/skills
-    - zip -r "$CI_PROJECT_DIR/dist/skill-trace32.zip" skill-trace32
+    - zip -r "$CI_PROJECT_DIR/dist/skills.zip" skills
   artifacts:
-    name: skill-trace32
+    name: skills
     paths:
       - dist/
     expire_in: 1 week
@@ -248,10 +235,6 @@ upload:
       curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
         --upload-file dist/t32mcp-windows-x86_64.exe \
         "${PACKAGE_REGISTRY_URL}/t32mcp-windows-x86_64.exe"
-    - |
-      curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
-        --upload-file dist/skill-trace32.zip \
-        "${PACKAGE_REGISTRY_URL}/skill-trace32.zip"
 
 # Create the git tag and the GitLab Release, but only after the build and
 # upload jobs succeed, so a failed build never leaves a dangling tag. release-cli
@@ -286,7 +269,4 @@ release:
           link_type: "package"
         - name: "t32mcp-windows-x86_64.exe"
           url: "${PACKAGE_REGISTRY_URL}/t32mcp-windows-x86_64.exe"
-          link_type: "package"
-        - name: "skill-trace32.zip"
-          url: "${PACKAGE_REGISTRY_URL}/skill-trace32.zip"
           link_type: "package"

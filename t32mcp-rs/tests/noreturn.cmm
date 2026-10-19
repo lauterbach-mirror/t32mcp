@@ -1,0 +1,3 @@
+ECHO "Hello"
+STOP
+ECHO "World"

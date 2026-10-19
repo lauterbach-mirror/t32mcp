@@ -1,0 +1,4 @@
+PRINT "before"
+AREA.Create t32mcp_test_area
+PRINT "after"
+ENDDO

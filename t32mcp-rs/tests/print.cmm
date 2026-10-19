@@ -1,0 +1,9 @@
+LOCAL &i &count
+PARAMETERS &count
+
+&i=0
+WHILE &i<&count
+(
+  PRINT "Hello world"
+  &i=&i+1
+)

@@ -1,0 +1,75 @@
+; SPDX-FileCopyrightText: 1989-2026 Lauterbach GmbH
+; SPDX-License-Identifier: Apache-2.0
+; {
+;   "interface": 1,
+;   "strict": true,
+;   "arguments": {
+;     "register": {"type": "symbol"},
+;     "value": {"type": "address"}
+;   }
+; }
+;
+; Example:
+; { "register": "x1", "value": "0x10" }
+
+; ----- MCP tool script setup boilerplate ---------------
+; prepare error handling and AREA window print output
+ERROR.RESet
+ON ERROR JUMPTO errorcleanup
+PRinTer.Area
+
+; get the current script path
+LOCAL &script_file &abs_path
+&script_file=OS.PresentPracticeFile()
+&abs_path=OS.FILE.ABSPATH("&script_file")
+
+; macros for input line and parsed input vars
+PRIVATE &line &register &value
+; read input line
+ENTRY %LINE &line
+
+; output header
+PRINT ""
+PRINT %WARNING "[MCP start] (&abs_path), args: &line"
+
+; parse, validate, and transform input data
+&register=STRing.SCANAndExtract("&line","register=","")
+&value=STRing.SCANAndExtract("&line","value=","")
+IF "&register"==""
+(
+  PRINT %ERROR "Error: parameter 'register' is required, e.g. x1."
+  PRINT %WARNING "[MCP end]"
+  ENDDO
+)
+IF "&value"==""
+(
+  PRINT %ERROR "Error: parameter 'value' is required, e.g. 0x10."
+  PRINT %WARNING "[MCP end]"
+  ENDDO
+)
+
+; ----- main script logic -------------------------------
+Register.Set &register &value
+PRINT "Success: &register=0x" FORMAT.HEX(0.,Register(&register))
+
+; ----- cleanup and error handling boilerplate ----------
+JUMPTO cleanup
+
+errorcleanup:
+(
+  ; prevent further nested errors - could lead to infinite loop
+  ON ERROR CONTinue
+  PRINT %ERROR "^^^ (error message on previous line): Encountered error during execution, caused by '" ERROR.CMDLINE() "'"
+  PRINT %ERROR "[t32mcp: script failed]"
+  PRINT %WARNING "[MCP end]"
+  ERROR.RESet
+  ON ERROR inherit
+  ENDDO
+)
+
+cleanup:
+(
+  PRINT %WARNING "[MCP end]"
+  ON ERROR inherit
+  ENDDO
+)

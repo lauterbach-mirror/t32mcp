@@ -1,519 +1,461 @@
-#![allow(dead_code)]
-
 // SPDX-FileCopyrightText: 2026 Lauterbach GmbH
 // SPDX-License-Identifier: Apache-2.0
 
-use t32mcp::*;
+//! t32mcp: Multi-threaded MCP server by Lauterbach for agentic debugging.
+//!
+//! rmcp (and tokio) dependencies has been dropped for better control.
+//!
+//! MCP types are using typify based on the official JSON MCP schemas.
+//! The protocol currently only defines a handful messages that are relevant
+//! for us, so we use serde for serialization.
 
-use anyhow::Result;
-use rand::RngExt;
-use rmcp::{
-    ServerHandler, ServiceExt,
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{Implementation, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router,
-    transport::{
-        stdio,
-        streamable_http_server::{
-            StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
-        },
+use std::{
+    collections::VecDeque, io::Write, net::IpAddr, net::SocketAddr, path::PathBuf,
+    process::ExitCode, sync::mpsc,
+};
+
+use serde_json::Deserializer;
+
+use t32mcp::{
+    docs, execution_policy, mcp, t32,
+    tools::{
+        self, trace32_get_status, trace32_manage_instances, trace32_run_command, trace32_run_script,
     },
 };
 
-use std::collections::HashMap;
-use std::env;
-use std::fs::File;
-use std::hash::{BuildHasherDefault, DefaultHasher};
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tempfile::Builder;
-use tokio::{
-    io::{AsyncReadExt, BufReader},
-    sync::Mutex,
-    time::{Duration, sleep},
-};
+// Stay compatible with older MCP versions
 
-// Provides access to the AREA output of TRACE32
-#[derive(Debug)]
-struct T32Sink {
-    pub active: bool,
-    pub received_data: String,
+#[allow(dead_code)]
+#[allow(clippy::enum_variant_names)]
+#[allow(clippy::large_enum_variant)]
+#[allow(clippy::wrong_self_convention)]
+#[rustfmt::skip]
+mod mcp_2025_11_25;
+const MCP_VERSION_2025_11_25: &str = "2025-11-25";
+
+const MCP_VERSION_CURRENT: &str = "2026-07-28";
+
+/// Return errors instead of panicking
+fn jsonrpc_error(req: &mcp::JsonrpcRequest, code: i64, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": &req.id,
+        "error": { "code": code, "message": message },
+    })
 }
 
-impl T32Sink {
-    pub fn new() -> Self {
-        Self {
-            active: false,
-            received_data: String::new(),
-        }
-    }
-
-    pub fn activate(&mut self) {
-        self.active = true;
-        self.received_data.clear();
-    }
-}
-
-static SINK: LazyLock<Mutex<T32Sink>> = LazyLock::new(|| Mutex::new(T32Sink::new()));
-
-static CONNECTED: AtomicBool = AtomicBool::new(false);
-
-#[derive(Debug, Clone)]
-pub struct T32Options {
-    pub unlock_all_tools: bool,
-    pub skills_base: String,
-    pub port: u16,
-    pub pipe_name: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct T32 {
-    tool_router: ToolRouter<Self>,
-    options: T32Options,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct SkillRequest {
-    #[schemars(
-        description = "Name of the skill containing the script: .../skill_name/scripts/script_name"
-    )]
-    pub skill_name: String,
-
-    #[schemars(description = "Name of the PRACTICE script file (*.cmm) to execute.")]
-    pub script_name: String,
-
-    #[schemars(description = "Arguments to pass to the script")]
-    pub script_args: Option<HashMap<String, String, BuildHasherDefault<DefaultHasher>>>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PracticeRequest {
-    #[schemars(description = "Content of the PRACTICE script.")]
-    pub practice: String,
-
-    #[schemars(description = "Value indicating whether to execute the PRACTICE script.")]
-    pub execute: bool,
-}
-
-#[tool_router]
-impl T32 {
-    // https://github.com/Cookee24/GithubFetcher/blob/4bdd7c6290b278e9e0645e4f9cf9b390c8075cd9/src/server/mod.rs#L40
-    pub fn new(options: T32Options) -> Self {
-        let mut server = Self {
-            tool_router: Self::tool_router(),
-            options,
-        };
-
-        if !server.options.unlock_all_tools {
-            server.tool_router.remove_route("execute_practice");
-        }
-
-        server
-    }
-
-    fn empty_stack(&self) -> Result<bool, String> {
-        let depth = t32_fnc("PRACTICE.StackDepth()".to_string())?;
-        let is_empty = depth == "0.";
-        Ok(is_empty)
-    }
-
-    fn establish_debug_connection(&self, ignore_stack: bool) -> Result<(), String> {
-        if !CONNECTED.load(Ordering::Relaxed) {
-            t32_connect(self.options.port)?;
-        }
-
-        CONNECTED.store(true, Ordering::Relaxed);
-
-        if let Ok(is_empty) = self.empty_stack() {
-            if !is_empty && !ignore_stack {
-                return Err("Discovered that the PRACTICE stack depth is greater than 0, indicating that another script is active. To continue, the running script must first finish execution. We do not allow multiple scripts to run simultaneously.".to_string());
-            } else {
-                return Ok(());
-            }
-        }
-
-        t32_connect(self.options.port)?;
-
-        if !self.empty_stack()? {
-            return Err("Discovered that the PRACTICE stack depth is greater than 0, indicating that another script is active. To continue, the running script must first finish execution. We do not allow multiple scripts to run simultaneously.".to_string());
-        }
-
-        Ok(())
-    }
-
-    #[tool(
-        name = "execute_practice_skill",
-        description = "Execute a PRACTICE script from a specified skill using TRACE32 PowerView.
-This tool starts the execution of a TRACE32 PRACTICE script (.cmm file)
-located within a skill's scripts directory.
-The script is run on a connected TRACE32 PowerView instance via the API Port.
-
-We do not allow the execution of multiple scripts simultaneously. To ensure that,
-we check the PRACTICE stack depth before the launch of the script.
-
-It is possible that the executed script contains an error.
-In that case, this function does NOT return an error since it only initiates
-the execution and does not wait for completion. Script errors can only be observed
-via the PowerView GUI by the user, or inferred if the script is still running
-during the next tool call.
-
-This tool call does not output the generated text by the script.
-For that, use the tool collect_practice_skill_response.
-
-Returns: Result of the operation.
-
-Possible exceptions:
-    - The specified (skill_name, script_name) is not found
-    - TRACE32 PowerView is not running or the API Port is not enabled
-    - Another script is already running
-
-Prerequisites:
-    - TRACE32 PowerView must be running
-    - API Port must be enabled in PowerView configuration
-    - The specified skill and script must exist in the expected directory structure"
-    )]
-    async fn execute_practice_skill(
-        &self,
-        Parameters(SkillRequest {
-            skill_name,
-            script_name,
-            script_args,
-        }): Parameters<SkillRequest>,
-    ) -> Result<String, String> {
-        if !script_name.ends_with(".cmm") {
-            return Err("Not a valid PRACTICE (*.cmm) script".to_string());
-        }
-
-        let mut path = PathBuf::from(self.options.skills_base.as_str());
-        path.push(format!("skill-{skill_name}"));
-        path.push("scripts");
-        path.push(script_name);
-        if !path.is_file() {
-            return Err(format!("File not found: {path:?}"));
-        }
-
-        let mut sink = match SINK.try_lock() {
-            Ok(s) => {
-                if s.active {
-                    return Err("Cannot setup named pipe (currently active)".to_string());
-                }
-                s
-            }
-            Err(e) => {
-                return Err(format!("Cannot setup named pipe ({e})"));
-            }
-        };
-
-        self.establish_debug_connection(false)?;
-
-        let connection = t32_open_pipe(&self.options.pipe_name).await?;
-
-        sink.activate();
-
-        let path = path.to_string_lossy().to_string();
-        let mut args = "".to_string();
-        if let Some(a) = script_args {
-            for (key, value) in &a {
-                let key = key.trim();
-                if key.contains(" ") {
-                    return Err(format!("Invalid key '{key}': Contains whitespace"));
-                }
-                let value = value.replace("\"", "\"\"");
-                args += &format!(" \"{key}={value}\"");
-            }
-        }
-
-        t32_cmd(format!("DO \"{path}\"{args}"))?;
-
-        tokio::spawn(async move {
-            let mut receiver = BufReader::with_capacity(256 * 1024, connection);
-            let mut buf = vec![0u8; 64 * 1024];
-
-            loop {
-                let res = receiver.read(&mut buf).await;
-                let mut sink = SINK.lock().await;
-                match res {
-                    Ok(0) => {
-                        // Server disconnected
-                        sink.active = false;
-                        break;
-                    }
-                    Ok(n) => {
-                        let message = String::from_utf8_lossy(&buf[..n]);
-                        sink.received_data.push_str(&message);
-                    }
-                    Err(e) => {
-                        sink.active = false;
-                        sink.received_data.push_str(&format!("\nRead error: {e}"));
-                        break;
-                    }
-                }
-            }
-        });
-
-        drop(sink);
-
-        self.collect_practice_skill_response().await
-    }
-
-    #[tool(
-        name = "collect_practice_skill_response",
-        description = "Collects the response generated so far by a previous call to execute_practice_skill.
-
-        It is possible that the script has not finished execution yet.
-        To communicate this information, the returned string starts with <[NOT] FINISHED>.
-
-Returns: Generated output by a previously called script. String begins either finished <FINISHED> or <NOT FINSIHED>,
-indicating whether the the script is still active. If the output of a finished script has been collected,
-the internal buffer will be cleared until the next tool call of collect_practice_skill_response.
-
-Prerequisites:
-    - TRACE32 PowerView must be running
-    - API Port must be enabled in PowerView configuration
-    - execute_practice_skill must have been called.
-
-Important: Only call this tool after a execute_practice_skill that has NOT finished execution (indicated by its result)."
-    )]
-    async fn collect_practice_skill_response(&self) -> Result<String, String> {
-        loop {
-            sleep(Duration::from_millis(100)).await;
-
-            let mut sink = SINK.lock().await;
-
-            let mut response: String = if sink.active {
-                "<NOT FINISHED>".to_string()
-            } else {
-                drop(sink);
-                // let the task fetch the rest
-                sleep(Duration::from_millis(10)).await;
-                sink = SINK.lock().await;
-                "<FINISHED>".to_string()
-            };
-            response.push_str("\n<CONTENT>\n");
-            response += &sink.received_data;
-
-            if sink.active {
-                if self.empty_stack()? {
-                    t32_cmd("AREA.CLOSE".to_string())?;
-                    sink.active = false;
-                    drop(sink);
-                    // script finished: loop once more to collect the remaining output
-                    continue;
-                }
-            } else {
-                sink.received_data.clear();
-            }
-
-            return Ok(response);
-        }
-    }
-
-    #[tool(
-        name = "abort_practice_skill",
-        description = "Aborts the execution of a running PRACTICE skill.
-
-        Use this tool when you are certain that the PRACTICE skill should have terminated by now.
-        Communicate this with the user and hint at the PLIST command that can be used in the GUI
-        to show the currently active script."
-    )]
-    async fn abort_practice_skill(&self) -> Result<(), String> {
-        self.establish_debug_connection(true)?;
-        t32_cmd("END".to_string())?;
-        let mut sink = SINK.lock().await;
-        sink.active = false;
-
-        Ok(())
-    }
-
-    #[tool(
-        name = "execute_practice",
-        description = "Execute PRACTICE commands via Remote API"
-    )]
-    fn execute_practice(
-        &self,
-        Parameters(PracticeRequest { practice, execute }): Parameters<PracticeRequest>,
-    ) -> Result<(), String> {
-        // Establish the debug connection first to avoid the creation of a temp file without feedback
-        self.establish_debug_connection(false)?;
-
-        let practice = practice.trim();
-        let cmd = if !execute || practice.contains("\n") || practice.contains(";") {
-            // PRACTICE script will always be executed as files
-            // Comments cannot be passed to the command line
-
-            // For some unknown reason, the tempfile's write function does not create a file
-            // Use the library for unique name generation and create the file separately
-            let path = match Builder::new().prefix("t32chat_").suffix(".cmm").tempfile() {
-                Ok(file) => file.path().to_string_lossy().to_string(),
-                Err(e) => {
-                    return Err(format!("Temp file creation failed ({e})"));
-                }
+fn process_request(req: &mcp::JsonrpcRequest, ctx: &mut tools::Context) -> serde_json::Value {
+    eprintln!("processing request {}: {}", req.id, req.method);
+    match req.method.as_str() {
+        "initialize" => {
+            let Some(protocol_version) = req.params.get("protocolVersion").and_then(|v| v.as_str())
+            else {
+                return jsonrpc_error(
+                    req,
+                    -32602,
+                    "Invalid params: initialize request missing protocolVersion",
+                );
             };
 
-            let mut script = match File::create(&path) {
-                Ok(file) => file,
-                Err(e) => {
-                    return Err(format!("File creation failed ({e})"));
-                }
+            // Version negotiation: if the requested version is not supported, the server
+            // answers with a version it supports and the client decides whether to continue.
+            if protocol_version != MCP_VERSION_2025_11_25 {
+                eprintln!(
+                    "client requested MCP version {protocol_version}, answering with {MCP_VERSION_2025_11_25}"
+                );
+            }
+            let result = mcp_2025_11_25::InitializeResult {
+                capabilities: mcp_2025_11_25::ServerCapabilities {
+                    logging: serde_json::Map::new(),
+                    prompts: Some(mcp_2025_11_25::ServerCapabilitiesPrompts {
+                        list_changed: Some(false),
+                    }),
+                    resources: Some(mcp_2025_11_25::ServerCapabilitiesResources {
+                        list_changed: Some(false),
+                        subscribe: Some(false),
+                    }),
+                    tools: Some(mcp_2025_11_25::ServerCapabilitiesTools {
+                        list_changed: Some(false),
+                    }),
+                    ..Default::default()
+                },
+                instructions: Some(ctx.instructions.clone()),
+                meta: serde_json::Map::new(),
+                protocol_version: MCP_VERSION_2025_11_25.to_string(),
+                server_info: mcp_2025_11_25::Implementation {
+                    description: None,
+                    icons: Vec::new(),
+                    name: "t32mcp".to_string(),
+                    title: None,
+                    version: env!("CARGO_PKG_VERSION").to_owned(),
+                    website_url: None,
+                },
             };
 
-            if let Err(e) = script.write_all(practice.as_bytes()) {
-                return Err(format!("File creation failed ({e})"));
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": &req.id,
+                "result": result,
+            })
+        }
+        "server/discover" => {
+            let Some(protocol_version) = req
+                .params
+                .get("_meta")
+                .and_then(|v| v.get("io.modelcontextprotocol/protocolVersion"))
+                .and_then(|v| v.as_str())
+            else {
+                return jsonrpc_error(
+                    req,
+                    -32602,
+                    "Invalid params: server/discover request missing protocolVersion",
+                );
             };
 
-            let op = if execute { "DO" } else { "PEDIT" };
-            format!("{op} \"{path}\"").to_string()
-        } else {
-            practice.to_string()
-        };
+            if protocol_version != MCP_VERSION_CURRENT {
+                return jsonrpc_error(
+                    req,
+                    -32602,
+                    &format!(
+                        "Invalid params: server/discover expects protocolVersion \
+                         {MCP_VERSION_CURRENT}, got {protocol_version}"
+                    ),
+                );
+            }
 
-        t32_cmd(cmd)?;
+            let result = mcp::DiscoverResult {
+                cache_scope: mcp::DiscoverResultCacheScope::Public,
+                capabilities: mcp::ServerCapabilities {
+                    prompts: Some(mcp::ServerCapabilitiesPrompts {
+                        list_changed: Some(false),
+                    }),
+                    resources: Some(mcp::ServerCapabilitiesResources {
+                        list_changed: Some(false),
+                        subscribe: Some(false),
+                    }),
+                    tools: Some(mcp::ServerCapabilitiesTools {
+                        list_changed: Some(false),
+                    }),
+                    ..Default::default()
+                },
+                instructions: Some(ctx.instructions.clone()),
+                meta: Some(mcp::ResultMetaObject {
+                    io_modelcontextprotocol_server_info: Some(mcp::Implementation {
+                        description: None,
+                        icons: Vec::new(),
+                        name: "t32mcp".to_string(),
+                        title: None,
+                        version: env!("CARGO_PKG_VERSION").to_owned(),
+                        website_url: None,
+                    }),
+                }),
+                result_type: "complete".to_string(),
+                supported_versions: vec![
+                    MCP_VERSION_2025_11_25.to_string(),
+                    MCP_VERSION_CURRENT.to_string(),
+                ],
+                ttl_ms: 3600000,
+            };
 
-        Ok(())
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": &req.id,
+                "result": result,
+            })
+        }
+        "tools/list" => {
+            let result = mcp::ListToolsResult {
+                cache_scope: mcp::ListToolsResultCacheScope::Public,
+                meta: None,
+                next_cursor: None,
+                result_type: "complete".to_string(),
+                tools: ctx.tools.iter().map(|e| e.tool.clone()).collect(),
+                ttl_ms: 3600000,
+            };
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": &req.id,
+                "result": result,
+            })
+        }
+        "resources/list" => {
+            let result = mcp::ListResourcesResult {
+                cache_scope: mcp::ListResourcesResultCacheScope::Public,
+                meta: None,
+                next_cursor: None,
+                result_type: "complete".to_string(),
+                resources: Vec::new(),
+                ttl_ms: 3600000,
+            };
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": &req.id,
+                "result": result,
+            })
+        }
+        "prompts/list" => {
+            let result = mcp::ListPromptsResult {
+                cache_scope: mcp::ListPromptsResultCacheScope::Public,
+                meta: None,
+                next_cursor: None,
+                result_type: "complete".to_string(),
+                prompts: Vec::new(),
+                ttl_ms: 3600000,
+            };
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": &req.id,
+                "result": result,
+            })
+        }
+        "resources/templates/list" => {
+            let result = mcp::ListResourceTemplatesResult {
+                cache_scope: mcp::ListResourceTemplatesResultCacheScope::Public,
+                meta: None,
+                next_cursor: None,
+                result_type: "complete".to_string(),
+                resource_templates: Vec::new(),
+                ttl_ms: 3600000,
+            };
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": &req.id,
+                "result": result,
+            })
+        }
+        "tools/call" => {
+            let tool_name = req.params.get("name").and_then(|v| v.as_str());
+            let arguments = req.params.get("arguments");
+            let result = match tool_name {
+                Some(name) => match ctx.tools.iter().find(|e| e.tool.name == name) {
+                    Some(entry) => (entry.handler)(arguments, ctx),
+                    None => mcp::CallToolResult {
+                        content: vec![mcp::ContentBlock::TextContent(mcp::TextContent {
+                            annotations: None,
+                            meta: None,
+                            text: format!("unknown tool: {name}"),
+                            type_: "text".to_string(),
+                        })],
+                        is_error: Some(true),
+                        meta: None,
+                        result_type: "complete".to_string(),
+                        structured_content: None,
+                    },
+                },
+                None => mcp::CallToolResult {
+                    content: vec![mcp::ContentBlock::TextContent(mcp::TextContent {
+                        annotations: None,
+                        meta: None,
+                        text: "missing tool name".to_string(),
+                        type_: "text".to_string(),
+                    })],
+                    is_error: Some(true),
+                    meta: None,
+                    result_type: "complete".to_string(),
+                    structured_content: None,
+                },
+            };
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": &req.id,
+                "result": result,
+            })
+        }
+        "ping" => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": &req.id,
+            "result": {},
+        }),
+        _ => {
+            eprintln!("request method not implemented: {}", req.method);
+            jsonrpc_error(req, -32601, &format!("Method not found: {}", req.method))
+        }
     }
 }
 
-#[tool_handler(router = self.tool_router)]
-impl ServerHandler for T32 {
-    fn get_info(&self) -> ServerInfo {
-        let capabilities = ServerCapabilities::builder().enable_tools().build();
-        let info = Implementation::new(
-            env!("CARGO_CRATE_NAME").to_owned(),
-            env!("CARGO_PKG_VERSION").to_owned(),
-        )
-        .with_title("Lauterbach TRACE32 MCP Server")
-        .with_website_url("https://gitlab.com/lauterbach/t32mcp");
+/// Compares in a time that does not depend on where the first difference is.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
+}
 
-        ServerInfo::new(capabilities).with_server_info(info)
+/// Create a new HTTP header
+fn http_into_header(name: &str, value: &str) -> tiny_http::Header {
+    tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
+}
+
+/// The value of the first header `name` of an HTTP request
+fn http_from_header(request: &tiny_http::Request, name: &'static str) -> Option<String> {
+    request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv(name))
+        .map(|h| h.value.to_string())
+}
+
+/// Send a HTTP response with CORS headers
+fn http_respond<R: std::io::Read>(
+    request: tiny_http::Request,
+    mut response: tiny_http::Response<R>,
+    cors: &[tiny_http::Header],
+) {
+    for h in cors {
+        response.add_header(h.clone());
     }
+    let _ = request.respond(response);
 }
 
-enum McpTransport {
-    Stdio,
-    Http { port: u16 },
-}
-
-/// npx @modelcontextprotocol/inspector cargo run
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
-    let random = rand::rng().random::<u64>();
-    let mut options = T32Options {
-        unlock_all_tools: false,
-        skills_base: "".to_string(),
-        port: 20000,
-        pipe_name: format!("t32chat.{random}"),
+fn remote_mcp(
+    address: IpAddr,
+    port: u16,
+    token: Option<String>,
+    allowed_origins: Vec<String>,
+    mut ctx: tools::Context,
+) -> ExitCode {
+    let address = SocketAddr::new(address, port);
+    let server = match tiny_http::Server::http(address) {
+        Ok(server) => server,
+        Err(e) => {
+            eprintln!("could not create http server: {}", e);
+            return ExitCode::FAILURE;
+        }
     };
 
-    let mut args = env::args().skip(1); // skip program name
-    let mut transport = McpTransport::Stdio;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                print_help();
-                return Ok(());
-            }
-            "--version" => {
-                print_version();
-                return Ok(());
-            }
-            "--t32chat" => {
-                options.unlock_all_tools = true;
-            }
-            "--skills" => match args.next() {
-                Some(base) => options.skills_base = base.trim_matches('"').to_string(),
-                None => {
-                    print_help();
-                    return Ok(());
-                }
-            },
-            "--port" => match args.next() {
-                Some(port) => {
-                    options.port = port.parse().expect("Invalid --port argument");
-                }
-                None => {
-                    print_help();
-                    return Ok(());
-                }
-            },
-            "--http" => match args.next() {
-                Some(port) => {
-                    let http_port: u16 = port.parse().expect("Invalid --http argument");
-                    transport = McpTransport::Http { port: http_port };
-                }
-                None => {
-                    print_help();
-                    return Ok(());
-                }
-            },
-            _ => {
-                print_help();
-                return Ok(());
-            }
-        }
+    eprintln!("Remote MCP server started. Listening on http://{}", address);
+    if token.is_none() {
+        eprintln!("warning: no --token or T32MCP_TOKEN set, HTTP requests are not authenticated");
     }
 
-    if options.skills_base.is_empty() {
-        let path: PathBuf = if cfg!(target_os = "windows") {
-            let appdata = env::var("APPDATA")
-                .expect("Skills base directory cannot be found (APPDATA not set)");
-            [appdata.as_str(), "TRACE32", "skills"].iter().collect()
-        } else {
-            // Linux/macOS: default to $XDG_CONFIG_HOME or ~/.config
-            let config_home = env::var("XDG_CONFIG_HOME")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .or_else(|| env::var("HOME").ok().map(|h| format!("{h}/.config")))
-                .expect("Skills base directory cannot be found (HOME not set)");
-            [config_home.as_str(), "TRACE32", "skills"].iter().collect()
+    loop {
+        let mut request = match server.recv() {
+            Ok(rq) => rq,
+            Err(e) => {
+                println!("error while receiving request: {}", e);
+                break;
+            }
         };
-        options.skills_base = path.to_string_lossy().to_string();
+
+        // Prevent that any web page could reach the server via localhost
+        let cors = match http_from_header(&request, "Origin") {
+            None => Vec::new(),
+            Some(origin)
+                if allowed_origins
+                    .iter()
+                    .any(|o| o.eq_ignore_ascii_case(&origin)) =>
+            {
+                vec![
+                    http_into_header("Access-Control-Allow-Origin", &origin),
+                    http_into_header("Vary", "Origin"),
+                ]
+            }
+            Some(origin) => {
+                eprintln!("rejected request from origin {origin} (see --allow-origin)");
+                let _ = request.respond(tiny_http::Response::empty(403));
+                continue;
+            }
+        };
+
+        // Handle CORS preflight request
+        if request.method() == &tiny_http::Method::Options && !cors.is_empty() {
+            let mut response = tiny_http::Response::empty(204)
+                .with_header(http_into_header("Access-Control-Allow-Methods", "POST"))
+                .with_header(http_into_header("Access-Control-Max-Age", "600"));
+
+            if let Some(h) = http_from_header(&request, "Access-Control-Request-Headers") {
+                response.add_header(http_into_header("Access-Control-Allow-Headers", &h));
+            }
+
+            http_respond(request, response, &cors);
+            continue;
+        }
+
+        // Without a token, every request is accepted
+        let authorized = if let Some(token) = &token {
+            let expected = format!("Bearer {token}");
+            request
+                .headers()
+                .iter()
+                .filter(|h| h.field.equiv("Authorization"))
+                .any(|h| constant_time_eq(h.value.as_bytes(), expected.as_bytes()))
+        } else {
+            true
+        };
+
+        if !authorized {
+            let response = tiny_http::Response::empty(401)
+                .with_header(http_into_header("WWW-Authenticate", "Bearer"));
+            http_respond(request, response, &cors);
+            continue;
+        }
+
+        if request.method() != &tiny_http::Method::Post {
+            http_respond(request, tiny_http::Response::empty(405), &cors);
+            continue;
+        }
+
+        let mut responses: Vec<serde_json::Value> = Vec::new();
+        for message in
+            Deserializer::from_reader(request.as_reader()).into_iter::<mcp::JsonrpcMessage>()
+        {
+            match &message {
+                Ok(msg) => {
+                    if let mcp::JsonrpcMessage::Request(req) = msg {
+                        let response = process_request(req, &mut ctx);
+                        responses.push(response);
+                    } else {
+                        eprintln!("request expected, but got: {:?}", msg);
+                    }
+                }
+                Err(e) => eprintln!("error parsing JSON-RPC message: {e}"),
+            }
+        }
+
+        // NOTE: Not tested yet because no server-side events yet implemented
+        responses.extend(ctx.event_queue.drain(..));
+
+        let body = match responses.len() {
+            0 => String::new(),
+            1 => serde_json::to_string(&responses[0]).unwrap(),
+            _ => serde_json::to_string(&responses).unwrap(),
+        };
+
+        let response = tiny_http::Response::from_string(body)
+            .with_header(http_into_header("Content-Type", "application/json"));
+        http_respond(request, response, &cors);
     }
 
-    // Initialize the tracing subscriber with file and stdout logging
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_ansi(false)
-        .init();
+    ExitCode::SUCCESS
+}
 
-    match transport {
-        McpTransport::Stdio => {
-            tracing::info!("Starting T32 MCP server (stdio)");
+fn local_mcp(mut ctx: tools::Context) -> ExitCode {
+    eprintln!("Local MCP server started. Listening on stdin");
+    let deserializer = Deserializer::from_reader(std::io::stdin().lock());
+    let stream = deserializer.into_iter::<mcp::JsonrpcMessage>();
 
-            let service = T32::new(options.clone())
-                .serve(stdio())
-                .await
-                .inspect_err(|e| {
-                    tracing::error!("serving error: {:?}", e);
-                })?;
+    for message in stream {
+        match &message {
+            Ok(msg) => {
+                if let mcp::JsonrpcMessage::Request(req) = msg {
+                    let response = process_request(req, &mut ctx);
+                    let json = serde_json::to_string(&response).unwrap();
+                    println!("{}", json);
+                    let _ = std::io::stdout().flush();
+                } else {
+                    eprintln!("request expected, but got: {:?}", msg);
+                }
+            }
+            Err(e) => {
+                eprintln!("error parsing JSON-RPC message: {e}");
+            }
+        };
 
-            service.waiting().await?;
+        while let Some(event) = ctx.event_queue.pop_front() {
+            let json = serde_json::to_string(&event).unwrap();
+            println!("{}", json);
         }
-        McpTransport::Http { port } => {
-            let bind_address = format!("127.0.0.1:{port}");
-            let ct = tokio_util::sync::CancellationToken::new();
-
-            let service = StreamableHttpService::new(
-                move || Ok(T32::new(options.clone())),
-                LocalSessionManager::default().into(),
-                StreamableHttpServerConfig::default(),
-            );
-
-            let router = axum::Router::new().nest_service("/mcp", service);
-            tracing::info!("Starting T32 MCP server (http://{bind_address}/mcp)");
-
-            let tcp_listener = tokio::net::TcpListener::bind(bind_address).await?;
-            axum::serve(tcp_listener, router)
-                .with_graceful_shutdown(async move {
-                    tokio::signal::ctrl_c().await.unwrap();
-                    ct.cancel();
-                })
-                .await?;
-        }
+        let _ = std::io::stdout().flush();
     }
 
-    Ok(())
+    ExitCode::SUCCESS
 }
 
 fn print_version() {
@@ -523,18 +465,253 @@ fn print_version() {
     #[cfg(debug_assertions)]
     let v = format!("{v}.debug");
 
-    println!("{v}");
+    println!(
+        "{v} (script interface {})",
+        execution_policy::SCRIPT_INTERFACE_VERSION
+    );
 }
 
 fn print_help() {
     print_version();
     println!(
-        "Options:
-  --http PORT      Run as remote MCP server (served over Http, no auth)
-  --port PORT      TRACE32 Remote API TCP port (default: 20000)
-  --skills DIR     Sets the skills base directory to DIR (default: %APPDATA%/TRACE32/skill)
-  --t32chat        Unlocks execute_practice tool
- --version         Print version number
-  -h, --help       Print this help message"
+        "General Options:
+  --version                Print version number and exit
+  -h, --help               Print this help message and exit
+
+MCP Transport (default: stdio):
+  --http PORT              Run as Remote MCP, served over HTTP
+  --bind ADDRESS           Address to bind on (default: 127.0.0.1)
+  --token TOKEN            Authentication Token (use with --http)
+  --allow-origin ORIGIN    Allowed remote hosts (use with --http)
+
+PowerView Connection:
+  --execution-policy P     Execution Policy (required):
+                           unrestricted, scripts, strict
+  --port PORT              TRACE32 Remote API TCP port (default: 20000),
+                           repeatable for AMP sessions. The agent can also
+                           add and remove ports dynamically itself using the
+                           trace32_manage_instances tool(disabled in
+                           \"strict\" execution policy mode).
+  --skills DIR             Root location of agent skills (repeatable,
+                           required by execution policy \"strict\")"
     );
+}
+
+fn main() -> ExitCode {
+    let mut args = std::env::args().skip(1);
+    let mut bind_address: IpAddr = "127.0.0.1".parse().expect("default is valid");
+    let mut http_port: Option<u16> = None;
+    let mut token: Option<String> = None;
+    let mut allowed_origins: Vec<String> = Vec::new();
+    let mut t32_ports: Vec<u16> = Vec::new();
+    let mut policy: Option<execution_policy::ExecutionPolicy> = None;
+    let mut skill_roots: Vec<PathBuf> = Vec::new();
+    let mut skills_source = docs::DEFAULT_SKILLS_SOURCE.to_string();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print_help();
+                return ExitCode::SUCCESS;
+            }
+            "--version" => {
+                print_version();
+                return ExitCode::SUCCESS;
+            }
+            "--execution-policy" => match args
+                .next()
+                .as_deref()
+                .map(execution_policy::ExecutionPolicy::parse)
+            {
+                Some(Some(p)) => {
+                    policy = match policy {
+                        Some(prev) => Some(prev.max(p)),
+                        None => Some(p),
+                    };
+                }
+                _ => {
+                    eprintln!("error: --execution-policy requires unrestricted, scripts or strict");
+                    return ExitCode::from(2);
+                }
+            },
+            // just for debugging the mcp server
+            "--skills-source" => match args.next() {
+                Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
+                    skills_source = url.trim_end_matches('/').to_string();
+                }
+                _ => {
+                    eprintln!("error: --skills-source requires an http(s) URL");
+                    return ExitCode::from(2);
+                }
+            },
+            "--skills" => match args.next() {
+                Some(dir) => match std::path::absolute(&dir) {
+                    Ok(root) if root.is_dir() => skill_roots.push(root),
+                    _ => {
+                        eprintln!("error: --skills is not a directory: {dir}");
+                        return ExitCode::from(2);
+                    }
+                },
+                None => {
+                    eprintln!("error: --skills requires a directory argument");
+                    return ExitCode::from(2);
+                }
+            },
+            "--http" => match args.next() {
+                Some(port) => match port.parse() {
+                    Ok(p) => http_port = Some(p),
+                    Err(_) => {
+                        eprintln!("error: invalid --http port: {port}");
+                        return ExitCode::from(2);
+                    }
+                },
+                None => {
+                    eprintln!("error: --http requires a port argument");
+                    return ExitCode::from(2);
+                }
+            },
+            "--token" => match args.next() {
+                Some(t) if !t.is_empty() => token = Some(t),
+                _ => {
+                    eprintln!("error: --token requires a non-empty token");
+                    return ExitCode::from(2);
+                }
+            },
+            "--bind" => match args.next() {
+                Some(t) if !t.is_empty() => match t.parse::<IpAddr>() {
+                    Ok(ip) => bind_address = ip,
+                    Err(_) => {
+                        eprintln!("error: --bind requires an IP address, e.g. 127.0.0.1");
+                        return ExitCode::from(2);
+                    }
+                },
+                _ => {
+                    eprintln!("error: --bind requires an IP address, e.g. 127.0.0.1");
+                    return ExitCode::from(2);
+                }
+            },
+            "--allow-origin" => match args.next() {
+                Some(o) if o.starts_with("http://") || o.starts_with("https://") => {
+                    allowed_origins.push(o.trim_end_matches('/').to_string());
+                }
+                _ => {
+                    eprintln!(
+                        "error: --allow-origin requires an origin, e.g. http://localhost:6274"
+                    );
+                    return ExitCode::from(2);
+                }
+            },
+            "--port" => match args.next() {
+                Some(port) => match port.parse() {
+                    Ok(p) => {
+                        if t32_ports.contains(&p) {
+                            eprintln!("warning: ignoring duplicate --port: {p}");
+                        } else {
+                            t32_ports.push(p);
+                        }
+                    }
+                    Err(_) => {
+                        eprintln!("error: invalid --port: {port}");
+                        return ExitCode::from(2);
+                    }
+                },
+                None => {
+                    eprintln!("error: --port requires a port argument");
+                    return ExitCode::from(2);
+                }
+            },
+            _ => {
+                eprintln!("error: unknown argument: {arg}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let policy = match policy {
+        Some(p) => p,
+        None => {
+            eprintln!("error: --execution-policy must be set: [unrestricted, scripts, strict]");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if policy == execution_policy::ExecutionPolicy::Strict && skill_roots.is_empty() {
+        eprintln!("error: --execution-policy strict requires --skills <directory>");
+        return ExitCode::from(2);
+    }
+
+    if policy == execution_policy::ExecutionPolicy::Strict && t32_ports.is_empty() {
+        eprintln!("error: --execution-policy strict requires --port <port>");
+        return ExitCode::from(2);
+    }
+
+    // --token wins over the environment variable
+    // note that an argument is visible in the process list
+    let token = token.or_else(|| std::env::var("T32MCP_TOKEN").ok().filter(|t| !t.is_empty()));
+    if token.is_some() && http_port.is_none() {
+        eprintln!("warning: --token and T32MCP_TOKEN are ignored without --http");
+    }
+    if !allowed_origins.is_empty() && http_port.is_none() {
+        eprintln!("warning: --allow-origin is ignored without --http");
+    }
+
+    // A non-loopback --bind makes the server reachable from the network:
+    // without authentication and an allowed origin, any host could reach it
+    if http_port.is_some() && !bind_address.is_loopback() {
+        if token.is_none() {
+            eprintln!(
+                "error: --bind {bind_address} is not a loopback address, it requires --token (or T32MCP_TOKEN)"
+            );
+            return ExitCode::from(2);
+        }
+        if allowed_origins.is_empty() {
+            eprintln!(
+                "error: --bind {bind_address} is not a loopback address, it requires --allow-origin"
+            );
+            return ExitCode::from(2);
+        }
+    }
+
+    let tools = match policy {
+        execution_policy::ExecutionPolicy::Unrestricted => vec![
+            trace32_get_status::entry(),
+            trace32_run_script::entry(policy, &skills_source),
+            trace32_manage_instances::entry(),
+            trace32_run_command::entry(),
+        ],
+        execution_policy::ExecutionPolicy::Scripts => vec![
+            trace32_get_status::entry(),
+            trace32_run_script::entry(policy, &skills_source),
+            trace32_manage_instances::entry(),
+        ],
+        execution_policy::ExecutionPolicy::Strict => vec![
+            trace32_get_status::entry(),
+            trace32_run_script::entry(policy, &skills_source),
+        ],
+    };
+
+    let mut worker = t32::Worker::new(t32_ports);
+    let (worker_tx, worker_rx) = mpsc::channel::<t32::WorkerRequest>();
+    let worker_handle = std::thread::spawn(move || {
+        worker.run(worker_rx);
+    });
+
+    let ctx = tools::Context {
+        event_queue: VecDeque::new(),
+        instructions: docs::server_instructions(policy, &skills_source),
+        policy,
+        skill_roots,
+        tools,
+        worker_tx,
+    };
+
+    let exit_code = if let Some(port) = http_port {
+        remote_mcp(bind_address, port, token, allowed_origins, ctx)
+    } else {
+        local_mcp(ctx)
+    };
+
+    let _ = worker_handle.join();
+
+    exit_code
 }

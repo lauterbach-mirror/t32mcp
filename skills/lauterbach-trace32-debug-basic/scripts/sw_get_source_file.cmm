@@ -1,0 +1,79 @@
+; SPDX-FileCopyrightText: 1989-2026 Lauterbach GmbH
+; SPDX-License-Identifier: Apache-2.0
+; {
+;   "interface": 1,
+;   "strict": true,
+;   "arguments": {
+;     "filename": {"type": "string"}
+;   }
+; }
+;
+; Example:
+; { "filename": "main.c" }
+
+; ----- MCP tool script setup boilerplate ---------------
+; prepare error handling and AREA window print output
+ERROR.RESet
+ON ERROR JUMPTO errorcleanup
+PRinTer.Area
+
+; get the current script path
+LOCAL &script_file &abs_path
+&script_file=OS.PresentPracticeFile()
+&abs_path=OS.FILE.ABSPATH("&script_file")
+
+; macros for input line and parsed input vars
+PRIVATE &line &filename
+; read input line
+ENTRY %LINE &line
+
+; output header
+PRINT ""
+PRINT %WARNING "[MCP start] (&abs_path), args: &line"
+
+; parse, validate, and transform input data
+&filename=STRing.SCANAndExtract("&line","filename=","")
+IF "&filename"==""
+(
+  PRINT %ERROR "Error: parameter 'filename' is required, e.g. main.c."
+  PRINT %WARNING "[MCP end]"
+  ENDDO
+)
+; a relative name is resolved against the working directory, then against the source search path
+IF !OS.FILE.readable("&filename")
+(
+  PRIVATE &found
+  &found=sYmbol.SEARCHFILE("&filename")
+  IF "&found"==""
+  (
+    PRINT %ERROR "Error: file '&filename' not found. Pass the full path, e.g. from sw_fgrep_source.cmm or sw_list_sourcepath.cmm."
+    PRINT %WARNING "[MCP end]"
+    ENDDO
+  )
+  &filename="&found"
+)
+
+; ----- main script logic -------------------------------
+WinPrint.TYPE "&filename" /LineNumbers
+
+; ----- cleanup and error handling boilerplate ----------
+JUMPTO cleanup
+
+errorcleanup:
+(
+  ; prevent further nested errors - could lead to infinite loop
+  ON ERROR CONTinue
+  PRINT %ERROR "^^^ (error message on previous line): Encountered error during execution, caused by '" ERROR.CMDLINE() "'"
+  PRINT %ERROR "[t32mcp: script failed]"
+  PRINT %WARNING "[MCP end]"
+  ERROR.RESet
+  ON ERROR inherit
+  ENDDO
+)
+
+cleanup:
+(
+  PRINT %WARNING "[MCP end]"
+  ON ERROR inherit
+  ENDDO
+)

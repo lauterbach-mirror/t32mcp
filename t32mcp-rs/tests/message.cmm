@@ -1,0 +1,2 @@
+PWD
+PRINT OS.PresentWorkingDirectory()

@@ -1,0 +1,75 @@
+; SPDX-FileCopyrightText: 1989-2026 Lauterbach GmbH
+; SPDX-License-Identifier: Apache-2.0
+; {
+;   "interface": 1,
+;   "strict": true,
+;   "arguments": {
+;     "address": {"type": "address"}
+;   }
+; }
+;
+; Example:
+; { "address": "0x1000" }
+
+; ----- MCP tool script setup boilerplate ---------------
+; prepare error handling and AREA window print output
+ERROR.RESet
+ON ERROR JUMPTO errorcleanup
+PRinTer.Area
+
+; get the current script path
+LOCAL &script_file &abs_path
+&script_file=OS.PresentPracticeFile()
+&abs_path=OS.FILE.ABSPATH("&script_file")
+
+; macros for input line and parsed input vars
+PRIVATE &line &address
+; read input line
+ENTRY %LINE &line
+
+; output header
+PRINT ""
+PRINT %WARNING "[MCP start] (&abs_path), args: &line"
+
+; parse, validate, and transform input data
+&address=STRing.SCANAndExtract("&line","address=","")
+IF "&address"==""
+(
+  PRINT %ERROR "Error: parameter 'address' is required, e.g. 0x1000 or a symbol."
+  PRINT %WARNING "[MCP end]"
+  ENDDO
+)
+IF !STRing.FIND("&address",":")
+(
+  IF !sYmbol.EXIST(&address)
+  (
+    PRINT "Info: '&address' is not a known symbol, interpreting as absolute address."
+    &address="A:&address"
+  )
+)
+
+; ----- main script logic -------------------------------
+PRINT %WARNING "Info: Display width is fixed to 32-bit at the moment"
+WinPrint.Data.dump &address
+
+; ----- cleanup and error handling boilerplate ----------
+JUMPTO cleanup
+
+errorcleanup:
+(
+  ; prevent further nested errors - could lead to infinite loop
+  ON ERROR CONTinue
+  PRINT %ERROR "^^^ (error message on previous line): Encountered error during execution, caused by '" ERROR.CMDLINE() "'"
+  PRINT %ERROR "[t32mcp: script failed]"
+  PRINT %WARNING "[MCP end]"
+  ERROR.RESet
+  ON ERROR inherit
+  ENDDO
+)
+
+cleanup:
+(
+  PRINT %WARNING "[MCP end]"
+  ON ERROR inherit
+  ENDDO
+)

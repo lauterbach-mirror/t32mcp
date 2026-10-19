@@ -1,0 +1,4 @@
+DIALOG.SELect t32mcp_test_dlg
+DIALOG.Set ED1 "hello"
+DIALOG.EXecute OKBTN
+ENDDO

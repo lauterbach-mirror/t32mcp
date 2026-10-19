@@ -1,0 +1,11 @@
+LOCAL &i &count
+PARAMETERS &count
+
+PRINTER.AREA
+
+&i=0
+WHILE &i<&count
+(
+    WINPRINT.PER
+    &i=&i+1.
+)

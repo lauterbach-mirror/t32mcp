@@ -1,0 +1,98 @@
+; SPDX-FileCopyrightText: 1989-2026 Lauterbach GmbH
+; SPDX-License-Identifier: Apache-2.0
+; {
+;   "interface": 1,
+;   "strict": true,
+;   "arguments": {
+;     "count": {"type": "number", "optional": true},
+;     "imaskhll": {"enum": ["ON", "OFF", "on", "off"], "optional": true}
+;   }
+; }
+;
+; Example:
+; { "count": "10.", "imaskhll": "OFF" }
+
+; ----- MCP tool script setup boilerplate ---------------
+; prepare error handling and AREA window print output
+ERROR.RESet
+ON ERROR JUMPTO errorcleanup
+PRinTer.Area
+
+; get the current script path
+LOCAL &script_file &abs_path
+&script_file=OS.PresentPracticeFile()
+&abs_path=OS.FILE.ABSPATH("&script_file")
+
+; macros for input line and parsed input vars
+PRIVATE &line &count &imaskhll &i
+; read input line
+ENTRY %LINE &line
+
+; output header
+PRINT ""
+PRINT %WARNING "[MCP start] (&abs_path), args: &line"
+
+; parse, validate, and transform input data
+&count=STRing.SCANAndExtract("&line","count=","1.")
+&imaskhll=STRing.UPpeR(STRing.SCANAndExtract("&line","imaskhll=",""))
+; a non-numeric value already fails here and jumps to errorcleanup
+IF &count<1.
+(
+  PRINT %ERROR "Error: parameter 'count' must be a positive decimal number, e.g. 10."
+  PRINT %WARNING "[MCP end]"
+  ENDDO
+)
+IF ("&imaskhll"!="")&&("&imaskhll"!="ON")&&("&imaskhll"!="OFF")
+(
+  PRINT %ERROR "Error: parameter 'imaskhll' must be ON or OFF (got '&imaskhll')."
+  PRINT %WARNING "[MCP end]"
+  ENDDO
+)
+IF STATE.RUN()
+(
+  PRINT %ERROR "Error: target is running, halt it first (set_halted.cmm)."
+  PRINT %WARNING "[MCP end]"
+  ENDDO
+)
+
+; ----- main script logic -------------------------------
+IF "&imaskhll"!=""
+(
+  SYStem.Option.IMASKHLL &imaskhll
+  PRINT "SYStem.Option.IMASKHLL set to &imaskhll"
+)
+
+; enter HLL step mode first, so that Step.Over steps source lines
+SILENT.Step.Hll 0.
+
+&i=0.
+WHILE &i<&count
+(
+  Step.Over
+  &i=&i+1.
+)
+
+PRINT "Stopped at: " PP() " in " sYmbol.FUNCTION(PP())
+WinPrint.List.Hll /MarkPC
+
+; ----- cleanup and error handling boilerplate ----------
+JUMPTO cleanup
+
+errorcleanup:
+(
+  ; prevent further nested errors - could lead to infinite loop
+  ON ERROR CONTinue
+  PRINT %ERROR "^^^ (error message on previous line): Encountered error during execution, caused by '" ERROR.CMDLINE() "'"
+  PRINT %ERROR "[t32mcp: script failed]"
+  PRINT %WARNING "[MCP end]"
+  ERROR.RESet
+  ON ERROR inherit
+  ENDDO
+)
+
+cleanup:
+(
+  PRINT %WARNING "[MCP end]"
+  ON ERROR inherit
+  ENDDO
+)

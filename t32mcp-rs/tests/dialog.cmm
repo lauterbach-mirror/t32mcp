@@ -1,0 +1,15 @@
+PRIVATE &v
+DIALOG.view
+(
+  HEADER "t32mcp test"
+  NAME "t32mcp_test_dlg"
+  POS 1. 0. 20. 1.
+ED1: EDIT "init" ""
+  POS 1. 2. 10. 1.
+OKBTN: BUTTON "OK" "CONTinue"
+)
+STOP
+&v=DIALOG.STRing(ED1)
+DIALOG.END
+PRINT "value=&v"
+ENDDO

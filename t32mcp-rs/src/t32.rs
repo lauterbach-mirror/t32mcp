@@ -79,9 +79,11 @@ fn pipe_closed(stream: &PipeStream) -> bool {
     ok == 0
 }
 
-/// POSIX `O_NONBLOCK` (0o4000 on Linux, not exposed by std).
-#[cfg(not(target_os = "windows"))]
+/// POSIX `O_NONBLOCK` (not exposed by std). On macOS 0o4000 is `O_EXCL`.
+#[cfg(target_os = "linux")]
 const O_NONBLOCK: i32 = 0o4000;
+#[cfg(target_os = "macos")]
+const O_NONBLOCK: i32 = 0x0004;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 

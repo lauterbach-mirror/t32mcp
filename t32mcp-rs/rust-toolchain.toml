@@ -1,6 +1,7 @@
 # Single source of truth for the Rust toolchain. CI's RUST_IMAGE in
 # .gitlab-ci.yml is pinned to the same version so local and CI agree.
+# Cross targets are not listed so local builds don't download them all.
+# To add a target: `rustup target add <target>`.
 [toolchain]
 channel = "1.96.0"
 components = ["clippy", "rustfmt"]
-targets = ["x86_64-pc-windows-msvc", "aarch64-unknown-linux-gnu"]

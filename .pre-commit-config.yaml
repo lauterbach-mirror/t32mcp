@@ -1,6 +1,13 @@
 fail_fast: true
 
 repos:
+# First, so fail_fast never skips it. Checks only the staged changes; the
+# secret_detection CI job scans what gets pushed.
+- repo: https://github.com/gitleaks/gitleaks
+  rev: v8.30.1
+  hooks:
+    - id: gitleaks
+
 - repo: local
   hooks:
     - id: renormalize
@@ -30,9 +37,16 @@ repos:
       types: [rust]
       pass_filenames: false
 
+    - id: cargo-test
+      name: cargo-test
+      entry: ci/test_rust.sh
+      language: unsupported
+      types: [rust]
+      pass_filenames: false
+
     - id: test
       name: pytest
-      entry: pytest -c tests/pyproject.toml
+      entry: uv run --directory tests pytest
       language: unsupported
       types: [rust]
       pass_filenames: false

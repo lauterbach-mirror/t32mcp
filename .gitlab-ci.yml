@@ -1,3 +1,17 @@
+# Inputs for a manually started release pipeline ("Run pipeline" form, or
+# `glab ci run --input release_version:v0.4.0`). The defaults are what push and
+# MR pipelines get: no version, so no release job is even created.
+spec:
+  inputs:
+    release_version:
+      description: "Version to release, e.g. v0.4.0. Leave empty for a normal pipeline (no release)."
+      default: ""
+      regex: ^(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)?$
+    release_dry_run:
+      description: "Build and verify the release only: nothing is uploaded, tagged or released."
+      type: boolean
+      default: false
+---
 # You can override the included template(s) by including variable overrides
 # SAST customization: https://docs.gitlab.com/user/application_security/sast/#available-cicd-variables
 # Secret Detection customization: https://docs.gitlab.com/user/application_security/secret_detection/pipeline/configure/
@@ -8,7 +22,6 @@
 
 stages:
   - test
-  - secret-detection
   - build
   - release
 
@@ -16,12 +29,12 @@ include:
   - template: Security/SAST.gitlab-ci.yml
   - template: Security/Secret-Detection.gitlab-ci.yml
 
-# A release is cut by manually running a pipeline on the default branch with a
-# RELEASE_VERSION variable (e.g. v0.1.0). The release job creates the tag only
-# after the build succeeds. Add RELEASE_DRY_RUN=true to test the release
+# A release is cut by manually running a pipeline on the default branch with
+# the release_version input set (e.g. v0.1.0). The release job creates the tag
+# only after the build succeeds. Tick release_dry_run to test the release
 # pipeline on any branch: verify + build run, but nothing is uploaded, tagged
-# or released. Block pipelines for tag refs so the tag created by
-# that job does not start a second, redundant pipeline.
+# or released (see ci/README.md). Block pipelines for tag refs so the tag
+# created by that job does not start a second, redundant pipeline.
 workflow:
   rules:
     - if: $CI_COMMIT_TAG
@@ -38,18 +51,50 @@ workflow:
 
 variables:
   SECRET_DETECTION_ENABLED: 'true'
-  # Pinned to match t32mcp-rs/rust-toolchain.toml so CI and local agree.
-  # Bump both together when upgrading.
-  RUST_IMAGE: 'rust:1.96-bookworm'
+  # The jobs read the inputs through these. An empty RELEASE_VERSION counts as
+  # unset in `rules: if: $RELEASE_VERSION`, so the release jobs are skipped.
+  RELEASE_VERSION: "$[[ inputs.release_version ]]"
+  RELEASE_DRY_RUN: "$[[ inputs.release_dry_run ]]"
+  # Built from ci/Dockerfile, all with the TRACE32 simulator; rebuild and bump
+  # the tags together with t32mcp-rs/rust-toolchain.toml or the TRACE32 release
+  # (see ci/README.md). RUST_TEST_IMAGE is RUST_IMAGE without the cross
+  # toolchains, half the size, for the jobs that don't need them.
+  RUST_TEST_IMAGE: 'registry.gitlab.com/lauterbach/t32mcp/ci/rust-test:1.96.0-t32-2026.02-r1'
+  RUST_IMAGE: 'registry.gitlab.com/lauterbach/t32mcp/ci/rust:1.96.0-t32-2026.02-r2'
+  PYTEST_IMAGE: 'registry.gitlab.com/lauterbach/t32mcp/ci/pytest:3.12-t32-2026.02-r1'
   # Keep cargo + xwin downloads inside the project dir so they can be cached.
   CARGO_HOME: '$CI_PROJECT_DIR/.cargo'
   XWIN_CACHE_DIR: '$CI_PROJECT_DIR/.xwin-cache'
+  # Keep target/ small for the cache: incremental data is useless after a fresh
+  # checkout (~40% of a debug target dir), and line tables suffice for
+  # backtraces. Release builds are not affected by either.
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  # Only pipelines on the default branch write the caches; all others only read
+  # them, which saves the upload. Set it to pull-push when starting a pipeline
+  # by hand to seed new caches from a branch (see ci/README.md).
+  CARGO_CACHE_POLICY: pull
+
+# Cargo cache, one per job so the target dirs don't clobber each other. Keyed on
+# the lockfile and toolchain, so a dependency or Rust update starts a fresh
+# cache instead of piling up stale artifacts in it.
+.cargo-cache: &cargo-cache
+  key:
+    prefix: "cargo-$CI_JOB_NAME"
+    files:
+      - t32mcp-rs/Cargo.lock
+      - t32mcp-rs/rust-toolchain.toml
+  paths:
+    - .cargo/registry/index/
+    - .cargo/registry/cache/
+    - t32mcp-rs/target/
+  policy: $CARGO_CACHE_POLICY
 
 sast:
   stage: test
 
 secret_detection:
-  stage: secret-detection
+  stage: test
 
 # ---------------------------------------------------------------------------
 # Checks (run on every push and on tags)
@@ -58,58 +103,85 @@ secret_detection:
 # Shared settings for the lint/test jobs. The crate lives in t32mcp-rs/.
 .rust-check:
   stage: test
-  image: $RUST_IMAGE
+  image: $RUST_TEST_IMAGE
   rules:
     # Skip lint/test in the release pipeline; they already ran on the push that
     # landed this commit. The build is gated on verify:release instead.
     - if: $RELEASE_VERSION
       when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      variables:
+        CARGO_CACHE_POLICY: pull-push
     - if: $CI_COMMIT_BRANCH
-  cache:
-    key: "cargo-$CI_JOB_NAME"
-    paths:
-      - .cargo/registry/index/
-      - .cargo/registry/cache/
-      - .cargo/git/db/
-      - t32mcp-rs/target/
+  cache: *cargo-cache
 clippy:
   extends: .rust-check
   script:
-    - rustup component add clippy
     - cd t32mcp-rs
     # --keep-going keeps compiling lib/bin/tests after the first failure so a
     # single run reports every lint instead of one-per-pipeline.
     - cargo clippy --all-targets --all-features --keep-going -- -D warnings
 
-# The integration tests in tests/ require a live TRACE32 (T32_Init), which
-# the current CI runners do not have, so we only verify they compile.
-# Switch to a real run (e.g. `cargo test -- --test-threads=1`) once a runner with
-# TRACE32 exists.
+# Runs all Rust tests, with a JUnit report for GitLab. The integration tests in
+# tests/ talk to the TRACE32 simulator of the image, started by start_sim.sh.
 test:
   extends: .rust-check
+  variables:
+    # Remote API port of the simulator (tests/sim.t32) and of the tests.
+    T32MCP_T32_PORT: "20000"
+  before_script:
+    - ci/start_sim.sh
   script:
     - cd t32mcp-rs
     - cargo build
-    - cargo test --all-targets --no-run
+    - cargo nextest run --profile ci
   artifacts:
-    # Only needed to hand the debug binary to test:integration; not a release artifact.
+    # The debug binary is only needed to hand it to test:integration; not a
+    # release artifact. The report is uploaded also when the tests fail.
+    when: always
     expire_in: 1h
     paths:
       - t32mcp-rs/target/debug/t32mcp
+    reports:
+      junit: t32mcp-rs/target/nextest/ci/junit.xml
 
 # Runs the Python integration tests (tests/) against the debug binary built by
-# `test`. Uses Astral's prebuilt uv+python image.
+# `test`. T32SYS in the image makes the tests start the TRACE32 simulator.
 test:integration:
   extends: .rust-check
-  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  image: $PYTEST_IMAGE
   needs:
     - test
   cache: []
+  variables:
+    # uv's cache and the venv are on different filesystems, so it copies anyway;
+    # this only silences its hardlink warning.
+    UV_LINK_MODE: copy
   script:
     - cd tests
-    - uv run pytest
+    # JUnit XML feeds GitLab's test report (pipeline "Tests" tab, MR widget).
+    - uv run pytest --junitxml=report.xml
+  artifacts:
+    # Also on failure, which is when the report matters most.
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: tests/report.xml
 
-# Release gate: only present when a release is requested via RELEASE_VERSION.
+# Compile-only check of the release cross targets on every push (no linking,
+# so no cross linker or SDK needed).
+check:cross:
+  extends: .rust-check
+  image: $RUST_IMAGE
+  script:
+    - cd t32mcp-rs
+    - rustup target add aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-apple-darwin x86_64-pc-windows-msvc
+    - cargo check --target aarch64-apple-darwin
+    - cargo check --target aarch64-unknown-linux-gnu
+    - cargo check --target x86_64-apple-darwin
+    - cargo check --target x86_64-pc-windows-msvc
+
+# Release gate: only present when a release is requested via release_version.
 # Runs in the first stage so a version mismatch or missing CHANGELOG section
 # fails fast, before the expensive cross-compile builds.
 verify:release:
@@ -123,7 +195,7 @@ verify:release:
     - |
       if [ "$CI_COMMIT_BRANCH" != "$CI_DEFAULT_BRANCH" ] && [ "$RELEASE_DRY_RUN" != "true" ]; then
         echo "ERROR: releases are only allowed from $CI_DEFAULT_BRANCH (got: $CI_COMMIT_BRANCH)." >&2
-        echo "Set RELEASE_DRY_RUN=true to test the release pipeline on this branch." >&2
+        echo "Tick the release_dry_run input to test the release pipeline on this branch." >&2
         exit 1
       fi
     - sh ci/check_version.sh "$RELEASE_VERSION"
@@ -141,20 +213,14 @@ verify:release:
   # starts. (clippy/test/security are skipped in the release pipeline.)
   needs:
     - verify:release
-  cache:
-    # Per-job cache so the Linux and Windows toolchains don't clobber each other.
-    key: "cargo-$CI_JOB_NAME"
-    paths:
-      - .cargo/bin/
-      - .cargo/registry/index/
-      - .cargo/registry/cache/
-      - .cargo/git/db/
-      - .xwin-cache/
-      - t32mcp-rs/target/
+  cache: *cargo-cache
   rules:
     # Builds only feed the release, so run them only when a release is requested
-    # (manual pipeline with RELEASE_VERSION set). rust-toolchain.toml pins the
+    # (manual pipeline with release_version set). rust-toolchain.toml pins the
     # same toolchain as CI, so a local build matches the release build.
+    - if: $RELEASE_VERSION && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      variables:
+        CARGO_CACHE_POLICY: pull-push
     - if: $RELEASE_VERSION
   artifacts:
     name: "$CI_JOB_NAME"
@@ -173,9 +239,7 @@ build:linux:
 build:linux-arm64:
   extends: .rust-build
   before_script:
-    # gcc-aarch64-linux-gnu + the cross glibc headers are the actual aarch64
-    # toolchain; the linker itself is configured in t32mcp-rs/.cargo/config.toml.
-    - apt-get update && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+    - rustup target add aarch64-unknown-linux-gnu
   script:
     - cd t32mcp-rs
     - cargo build --release --target aarch64-unknown-linux-gnu
@@ -184,17 +248,45 @@ build:linux-arm64:
 
 build:windows:
   extends: .rust-build
+  cache:
+    - *cargo-cache
+    # The Windows CRT/SDK that cargo-xwin downloads. It only changes with the
+    # cargo-xwin version, which ci/Dockerfile pins.
+    - key:
+        prefix: xwin
+        files:
+          - ci/Dockerfile
+      paths:
+        - .xwin-cache/
+      policy: $CARGO_CACHE_POLICY
   before_script:
     - rustup target add x86_64-pc-windows-msvc
-    # cargo installs to $CARGO_HOME/bin (here inside the cached .cargo dir), which
-    # is not on PATH, so check the file directly. A cached binary otherwise makes
-    # `cargo install` fail with "already exists".
-    - test -x "$CARGO_HOME/bin/cargo-xwin" || cargo install --locked cargo-xwin
   script:
     - cd t32mcp-rs
     - cargo xwin build --release --target x86_64-pc-windows-msvc
     - mkdir -p "$CI_PROJECT_DIR/dist"
     - cp target/x86_64-pc-windows-msvc/release/t32mcp.exe "$CI_PROJECT_DIR/dist/t32mcp-windows-x86_64.exe"
+
+# macOS via cargo-zigbuild (zig is the cross linker). Binaries are unsigned.
+build:macos-aarch64:
+  extends: .rust-build
+  before_script:
+    - rustup target add aarch64-apple-darwin
+  script:
+    - cd t32mcp-rs
+    - cargo zigbuild --release --target aarch64-apple-darwin
+    - mkdir -p "$CI_PROJECT_DIR/dist"
+    - cp target/aarch64-apple-darwin/release/t32mcp "$CI_PROJECT_DIR/dist/t32mcp-macos-aarch64"
+
+build:macos-x86_64:
+  extends: .rust-build
+  before_script:
+    - rustup target add x86_64-apple-darwin
+  script:
+    - cd t32mcp-rs
+    - cargo zigbuild --release --target x86_64-apple-darwin
+    - mkdir -p "$CI_PROJECT_DIR/dist"
+    - cp target/x86_64-apple-darwin/release/t32mcp "$CI_PROJECT_DIR/dist/t32mcp-macos-x86_64"
 
 # Bundle the TRACE32 skill directory as a zip release artifact.
 package:skill:
@@ -216,10 +308,10 @@ package:skill:
     expire_in: 1 week
 
 # ---------------------------------------------------------------------------
-# Release (manual pipeline on the default branch with RELEASE_VERSION set)
+# Release (manual pipeline on the default branch with release_version set)
 # ---------------------------------------------------------------------------
 
-# Stand-in for upload + release when RELEASE_DRY_RUN=true: checks that all
+# Stand-in for upload + release when release_dry_run is ticked: checks that all
 # release files were built and that the release notes render, without
 # touching the package registry or creating a tag/release.
 release:dry-run:
@@ -230,12 +322,16 @@ release:dry-run:
   needs:
     - build:linux
     - build:linux-arm64
+    - build:macos-aarch64
+    - build:macos-x86_64
     - build:windows
     - package:skill
   script:
     - ls -l dist/
     - test -f dist/t32mcp-linux-x86_64
     - test -f dist/t32mcp-linux-aarch64
+    - test -f dist/t32mcp-macos-aarch64
+    - test -f dist/t32mcp-macos-x86_64
     - test -f dist/t32mcp-windows-x86_64.exe
     - test -f dist/skills.zip
     - sh ci/extract_changelog.sh "$RELEASE_VERSION" > release_notes.md
@@ -250,6 +346,8 @@ upload:
   needs:
     - build:linux
     - build:linux-arm64
+    - build:macos-aarch64
+    - build:macos-x86_64
     - build:windows
     - package:skill
   variables:
@@ -265,8 +363,20 @@ upload:
         "${PACKAGE_REGISTRY_URL}/t32mcp-linux-aarch64"
     - |
       curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file dist/t32mcp-macos-aarch64 \
+        "${PACKAGE_REGISTRY_URL}/t32mcp-macos-aarch64"
+    - |
+      curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file dist/t32mcp-macos-x86_64 \
+        "${PACKAGE_REGISTRY_URL}/t32mcp-macos-x86_64"
+    - |
+      curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
         --upload-file dist/t32mcp-windows-x86_64.exe \
         "${PACKAGE_REGISTRY_URL}/t32mcp-windows-x86_64.exe"
+    - |
+      curl --fail-with-body --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+        --upload-file dist/skills.zip \
+        "${PACKAGE_REGISTRY_URL}/skills.zip"
 
 # Create the git tag and the GitLab Release, but only after the build and
 # upload jobs succeed, so a failed build never leaves a dangling tag. release-cli
@@ -299,6 +409,15 @@ release:
         - name: "t32mcp-linux-aarch64"
           url: "${PACKAGE_REGISTRY_URL}/t32mcp-linux-aarch64"
           link_type: "package"
+        - name: "t32mcp-macos-aarch64"
+          url: "${PACKAGE_REGISTRY_URL}/t32mcp-macos-aarch64"
+          link_type: "package"
+        - name: "t32mcp-macos-x86_64"
+          url: "${PACKAGE_REGISTRY_URL}/t32mcp-macos-x86_64"
+          link_type: "package"
         - name: "t32mcp-windows-x86_64.exe"
           url: "${PACKAGE_REGISTRY_URL}/t32mcp-windows-x86_64.exe"
+          link_type: "package"
+        - name: "skills.zip"
+          url: "${PACKAGE_REGISTRY_URL}/skills.zip"
           link_type: "package"

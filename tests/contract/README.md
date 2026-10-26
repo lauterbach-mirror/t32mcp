@@ -12,4 +12,4 @@ the AREA, errors via `ON ERROR`.
   breaks the scripts of that version: bump `SCRIPT_INTERFACE_VERSION`, add `interface-<n+1>/`,
   and bump the major version of the skills.
 - Run: `uv run pytest test_contract.py` (in `tests/`) with a PowerView (e.g. the Instruction Set Simulator) on
-  `T32MCP_T32_PORT` (default 20000). Skipped if none is reachable.
+  `T32MCP_T32_PORT` (default 20000), or with `T32SYS` set to start one (see `../README.md`). Skipped otherwise.

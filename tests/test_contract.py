@@ -1,28 +1,17 @@
 """Contract tests of the script interface, see README.md. Need a PowerView."""
 
-import os
-import socket
 from pathlib import Path
 
 import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
 
-from conftest import t32mcp_path
+from conftest import T32_PORT, t32mcp_path
 
-T32_PORT = int(os.environ.get("T32MCP_T32_PORT", "20000"))
 CONTRACT = Path(__file__).parent / "contract"
 
-
-def powerview_reachable() -> bool:
-    with socket.socket() as s:
-        s.settimeout(0.5)
-        return s.connect_ex(("127.0.0.1", T32_PORT)) == 0
-
-
-pytestmark = pytest.mark.skipif(
-    not powerview_reachable(), reason=f"no PowerView on port {T32_PORT} (T32MCP_T32_PORT)"
-)
+# A PowerView on T32_PORT, started by the fixture if needed; skipped without one.
+pytestmark = pytest.mark.usefixtures("powerview")
 
 
 async def run(request, interface: int, script: str, args: dict | None = None):

@@ -490,7 +490,7 @@ PowerView Connection:
   --port PORT              TRACE32 Remote API TCP port (default: 20000),
                            repeatable for AMP sessions. The agent can also
                            add and remove ports dynamically itself using the
-                           trace32_manage_instances tool(disabled in
+                           trace32_manage_instances tool (disabled in
                            \"strict\" execution policy mode).
   --skills DIR             Root location of agent skills (repeatable,
                            required by execution policy \"strict\")"

@@ -1,0 +1,16 @@
+; Headless RISC-V Instruction Set Simulator for the tests that need a PowerView
+; (tests/ and t32mcp-rs/tests/). Start it with T32SYS and T32MCP_T32_PORT set:
+;   "$T32SYS/bin/pc_linux64/t32mriscv" -c sim.t32   (or: ci/start_sim.sh)
+
+OS=
+ID=T32MCPTEST
+SYS=${T32SYS}
+
+PBI=SIM
+
+; Remote API, localhost only
+RCL=NETTCP
+PORT=${T32MCP_T32_PORT}
+REMOTEHOSTDENY
+
+SCREEN=OFF

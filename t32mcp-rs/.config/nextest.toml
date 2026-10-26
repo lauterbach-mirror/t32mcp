@@ -1,0 +1,19 @@
+# cargo-nextest configuration. The CI `test` job runs `--profile ci`.
+
+[test-groups]
+# The tests in tests/t32_test.rs share one PowerView, which runs one script at
+# a time. nextest runs every test in its own process, so their T32_LOCK does
+# not serialize them. This group does.
+powerview = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "binary(t32_test)"
+test-group = "powerview"
+
+[profile.ci]
+# Run all tests, so the report lists every failure.
+fail-fast = false
+
+[profile.ci.junit]
+# Relative to target/nextest/ci/.
+path = "junit.xml"

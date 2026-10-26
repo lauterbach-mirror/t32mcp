@@ -17,6 +17,15 @@ Please submit changes as [GitLab merge requests](https://gitlab.com/lauterbach/t
 
 To create your own skills, use the bundled skill `skills/lauterbach-trace32-skill-creator`. It documents the script format, the script header, and how skills are written.
 
+### Pre-commit hooks
+
+The repository ships a [pre-commit](https://pre-commit.com) configuration. Among other checks, it runs [gitleaks](https://github.com/gitleaks/gitleaks) on the staged changes, so secrets are caught before they are committed. Install it once per clone:
+
+```sh
+uv tool install pre-commit
+pre-commit install
+```
+
 ## A note on new MCP tools
 
 We follow a progressive disclosure approach. The server intentionally exposes only a few generic tools (`trace32_run_script`, `trace32_run_command`, `trace32_get_status`, `trace32_manage_instances`).

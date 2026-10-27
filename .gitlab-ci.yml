@@ -53,6 +53,8 @@ variables:
   SECRET_DETECTION_ENABLED: 'true'
   # The jobs read the inputs through these. An empty RELEASE_VERSION counts as
   # unset in `rules: if: $RELEASE_VERSION`, so the release jobs are skipped.
+  # Combined with && it does not: there an empty but defined variable is true,
+  # so write `$RELEASE_VERSION != "" && ...` instead.
   RELEASE_VERSION: "$[[ inputs.release_version ]]"
   RELEASE_DRY_RUN: "$[[ inputs.release_dry_run ]]"
   # Built from ci/Dockerfile, all with the TRACE32 simulator; rebuild and bump
@@ -218,7 +220,7 @@ verify:release:
     # Builds only feed the release, so run them only when a release is requested
     # (manual pipeline with release_version set). rust-toolchain.toml pins the
     # same toolchain as CI, so a local build matches the release build.
-    - if: $RELEASE_VERSION && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $RELEASE_VERSION != "" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       variables:
         CARGO_CACHE_POLICY: pull-push
     - if: $RELEASE_VERSION
@@ -318,7 +320,7 @@ release:dry-run:
   stage: release
   image: alpine:latest
   rules:
-    - if: $RELEASE_VERSION && $RELEASE_DRY_RUN == "true"
+    - if: $RELEASE_VERSION != "" && $RELEASE_DRY_RUN == "true"
   needs:
     - build:linux
     - build:linux-arm64
@@ -342,7 +344,7 @@ upload:
   stage: release
   image: curlimages/curl:latest
   rules:
-    - if: $RELEASE_VERSION && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $RELEASE_DRY_RUN != "true"
+    - if: $RELEASE_VERSION != "" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $RELEASE_DRY_RUN != "true"
   needs:
     - build:linux
     - build:linux-arm64
@@ -387,7 +389,7 @@ release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
   rules:
-    - if: $RELEASE_VERSION && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $RELEASE_DRY_RUN != "true"
+    - if: $RELEASE_VERSION != "" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $RELEASE_DRY_RUN != "true"
   needs:
     - upload
   variables:

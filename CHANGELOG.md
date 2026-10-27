@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-10-27
+### Added
+- Prebuilt unsigned executables for macOS (`t32mcp-macos-aarch64`, `t32mcp-macos-x86_64`).
+
+### Fixed
+- macOS: the first `trace32_run_command` or `trace32_run_script` hung, because the AREA FIFO was opened with the Linux value of `O_NONBLOCK`.
+- Missing space in the `--port` help text.
+- The skills bundle `skills.zip` is attached to the release in the CI job.
+
 ## [0.3.0] - 2026-10-19
 
 **Note to existing users**:

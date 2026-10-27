@@ -56,7 +56,7 @@ $ cargo build --manifest-path t32mcp-rs/Cargo.toml --release
 
 ```
 $ t32mcp --help
-t32mcp v0.3.0 (script interface 1)
+t32mcp v0.3.1 (script interface 1)
 General Options:
   --version                Print version number and exit
   -h, --help               Print this help message and exit

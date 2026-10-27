@@ -3,8 +3,8 @@ name: lauterbach-trace32-debug-basic
 description: Use this skill when the user wants to inspect or control a running embedded target through TRACE32, e.g. halt/run/step, read registers or memory, set breakpoints or watchpoints, view source, locals or the call stack, or load an ELF. Use it even if TRACE32 is not named, as soon as a connected target should be debugged. To add new skills or scripts refer to lauterbach-trace32-skill-creator. Defines the script naming convention for all lauterbach-trace32-debug-* skills.
 license: "Apache-2.0, (C) 1989-2026 Lauterbach GmbH, see LICENSES/Apache-2.0.txt"
 metadata:
-  version: "0.1.0"
-  date: "2026-10-02"
+  version: "0.2.0"
+  date: "2026-10-27"
 ---
 
 # Basic Debugging with Lauterbach TRACE32
@@ -16,6 +16,7 @@ The scripts of this skill run in TRACE32 PowerView via Lauterbach's MCP server `
 1. Call `trace32_get_status` first. It returns every PowerView instance (`port`) with its cores (`core`), the CPU, the run state and, for halted cores, the registers.
 2. Call `trace32_run_script` with:
     - `script_path`: absolute path `<this skill's directory>/scripts/<name>.cmm`, e.g. `.../lauterbach-trace32-debug-basic/scripts/get_state.cmm`
+    - Under the execution policy `strict`, instead of `script_path`: `skill_name` `lauterbach-trace32-debug-basic` and `script_name` `<name>`, e.g. `get_state`. `t32mcp` looks the script up in its `--skills` directories.
     - `script_args`: JSON object, all values strings, e.g. `{ "address": "main" }`
     - `port`, `core` (optional): instance and core from `trace32_get_status`. Needed for multicore/AMP setups. Without them, the selected core of the first reachable instance is used. Several instances: `lauterbach-trace32-debug-amp`. Several cores in one instance: `lauterbach-trace32-debug-smp`.
     - `timeout` (optional): seconds to wait, default 5. Raise it for long-running scripts.

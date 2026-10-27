@@ -3,8 +3,8 @@ name: lauterbach-trace32-skill-creator
 description: Use this skill when the AI agent should gain new TRACE32 capabilities, e.g. create or extend an agent skill, add a PRACTICE script (*.cmm) to a skill so the agent can run it via t32mcp, make an existing collection of PRACTICE scripts available to the agent, or write evals for a TRACE32 skill. Not for scripts a human runs in PowerView (lauterbach-trace32-scripting).
 license: "Apache-2.0, (C) 1989-2026 Lauterbach GmbH, see LICENSES/Apache-2.0.txt"
 metadata:
-  version: "0.1.0"
-  date: "2026-10-02"
+  version: "0.2.0"
+  date: "2026-10-27"
 ---
 
 # Creating Skills for TRACE32
@@ -22,9 +22,10 @@ Your job: help the developer create or extend such a skill.
 
 `t32mcp` executes PRACTICE scripts in a running PowerView instance.
 
-- Scripts live at `<skill>/scripts/<name>.cmm`, next to the skill's `SKILL.md`. The skill can be in any skills directory of the agent.
+- Scripts live at `<skill>/scripts/<name>.cmm`, next to the skill's `SKILL.md`. The skill can be in any skills directory of the agent. Under the execution policy `strict`, it must be in a `--skills` directory of `t32mcp`.
 - Execution: `trace32_run_script` with `script_path` (absolute path), `script_args` (JSON object, all values strings), optional `port`, `core` and `timeout` (seconds, default 5).
-- Scripts outside a skill directory also run, but the result starts with a warning.
+    - Under `strict`: `skill_name` (the skill's directory name) and `script_name` (e.g. `get_state`) instead of `script_path`.
+- Scripts outside a skill directory also run, but the result starts with a warning. Not under `strict`.
 - The user may restrict this with an execution policy. Under `strict`, the agent must not create or change scripts. See `lauterbach-t32mcp-execution-policy`.
 - The JSON arguments arrive in the script as a single line of `key=value` pairs.
 - Only one script runs at a time.
